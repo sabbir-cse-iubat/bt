@@ -9,13 +9,17 @@
 # - Do NOT use Python 3.13 for TensorFlow unless you know exactly what you're doing.
 #
 # ------------------------------------------------------------
-
 import os
+# Force Keras 3 (disable legacy tf_keras)
+os.environ["TF_USE_LEGACY_KERAS"] = "0"
+
 
 # Force TF to use legacy Keras if available (helps when standalone `keras` v3 conflicts)
 # Must be set BEFORE importing tensorflow.
 os.environ.setdefault("TF_USE_LEGACY_KERAS", "1")
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+import tensorflow as tf
+import keras
 
 import io
 import numpy as np
@@ -157,23 +161,20 @@ def _download_model_if_needed(file_id: str, filename: str) -> str:
 
 def _try_load_model_robust(local_path: str):
     """
-    Loads model with both Keras3 tf.keras and legacy tf_keras.
+    Load Keras 3 .keras models reliably on Streamlit Cloud.
     """
-    # 1) tf.keras (Keras 3)
+    # First: Keras 3 loader (this matches `batch_shape` config)
     try:
-        return tf.keras.models.load_model(local_path, compile=False, safe_mode=False)
+        return keras.saving.load_model(local_path, compile=False)
     except Exception:
         pass
 
-    # 2) legacy tf_keras if enabled in env
+    # Fallback: tf.keras (sometimes works if env is correct)
     try:
-        import tf_keras
-        return tf_keras.models.load_model(local_path, compile=False, safe_mode=False)
-    except Exception:
-        pass
+        return tf.keras.models.load_model(local_path, compile=False)
+    except Exception as e:
+        raise RuntimeError(f"Model load failed: {e}")
 
-    # 3) last fallback
-    return tf.keras.models.load_model(local_path, compile=False)
 
 @st.cache_resource(show_spinner=False)
 def load_single_model(model_name: str):
