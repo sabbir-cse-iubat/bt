@@ -79,47 +79,35 @@ def _download_model_if_needed(file_id: str, filename: str) -> str:
 
 def _try_load_model_robust(local_path: str):
     """
-    Fixes the exact error you got:
-    ValueError: Layer "dense" expects 1 input(s), but it received 2 input tensors.
-
-    That error usually appears when:
-    - Streamlit environment has standalone `keras` (Keras 3) and TF/keras mismatch,
-    - or TF is running in a backend mode that changes deserialization behavior.
-
-    Strategy:
-    1) Normal tf.keras load
-    2) tf.keras load with safe_mode=False (Keras 3 compatible signature)
-    3) If TF_USE_LEGACY_KERAS works and tf_keras is present, load with tf_keras
+    Robust loader for Streamlit Cloud.
+    Handles environments where TF_USE_LEGACY_KERAS is enabled.
     """
-    # 1) normal
+    # 1) Normal tf.keras load (Keras 3 path)
+    try:
+        return tf.keras.models.load_model(local_path, compile=False, safe_mode=False)
+    except Exception:
+        pass
+
+    # 2) Legacy tf_keras load (when TF_USE_LEGACY_KERAS=True)
+    try:
+        import tf_keras
+        return tf_keras.models.load_model(local_path, compile=False, safe_mode=False)
+    except Exception:
+        pass
+
+    # 3) Last fallback: safe_mode default (sometimes helps certain archives)
     try:
         return tf.keras.models.load_model(local_path, compile=False)
     except Exception:
         pass
 
-    # 2) safe_mode=False (only available on newer stacks; safe to try)
-    try:
-        return tf.keras.models.load_model(local_path, compile=False, safe_mode=False)
-    except TypeError:
-        # older signature without safe_mode
-        pass
-    except Exception:
-        pass
-
-    # 3) legacy tf_keras (when TF_USE_LEGACY_KERAS=1)
-    try:
-        import tf_keras  # provided when TF uses legacy Keras
-        return tf_keras.models.load_model(local_path, compile=False)
-    except Exception:
-        pass
-
-    # If all fail, raise a helpful message
     raise RuntimeError(
-        "Model load failed in this environment.\n\n"
-        "Most common cause: TensorFlow/Keras version mismatch on Streamlit Cloud.\n"
-        "Fix: Use Python 3.10/3.11 and pin TensorFlow version in requirements.txt.\n"
-        "Also avoid installing standalone `keras` separately unless you know why."
+        "Model load failed.\n"
+        "This usually happens due to TF/Keras serialization mismatch.\n"
+        "Fix: keep python-3.11, tensorflow==2.16.1, and install tf_keras==2.16.0.\n"
+        f"File: {local_path}"
     )
+
 
 
 @st.cache_resource(show_spinner=False)
