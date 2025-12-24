@@ -57,77 +57,152 @@ RESNET_ID    = "1zgfjc0JTIe1Xg24rcWTT7zym9FL2MObF"  # model_c best_model.keras
 def gdrive_direct_url(file_id: str) -> str:
     return f"https://drive.google.com/uc?id={file_id}"
 
+import os
+import gdown
+import tensorflow as tf
+import streamlit as st
 
-# ------------------------------------------------------------
-# 2) MODEL DOWNLOAD + ROBUST LOAD (FIX FOR YOUR ERROR)
-# ------------------------------------------------------------
+# ---------------------------
+# Model cache dir
+# ---------------------------
+MODEL_CACHE_DIR = "models_cache"
+os.makedirs(MODEL_CACHE_DIR, exist_ok=True)
+
+# ---------------------------
+# Google Drive file IDs (from your links)
+# ---------------------------
+DENSENET_ID  = "1IVbNJA_TKFsT9ZftiWyihxp6CYSoJxwd"
+MOBILENET_ID = "1MOXJSc3GuHoq4T7ZIPKNqyDF3r33_pml"
+RESNET_ID    = "1zgfjc0JTIe1Xg24rcWTT7zym9FL2MObF"
+
+def _is_probably_html(path: str) -> bool:
+    """Detect if downloaded file is actually an HTML page."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(4096).lower()
+        return (b"<html" in head) or (b"<!doctype html" in head) or (b"google drive" in head)
+    except Exception:
+        return False
+
+def _validate_downloaded_file(path: str):
+    """Raise helpful error if download is broken."""
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"File not found after download: {path}")
+
+    size = os.path.getsize(path)
+    if size < 50_000:  # .keras is a zip; usually much larger than this
+        # could still be tiny model, but very unlikely for DenseNet etc.
+        if _is_probably_html(path):
+            raise RuntimeError(
+                "Downloaded file looks like HTML (Google Drive confirmation page), not a .keras model.\n"
+                "Fix: In Google Drive, set the file sharing to: Anyone with the link (Viewer).\n"
+                f"Bad file: {path} (size={size} bytes)"
+            )
+        raise RuntimeError(
+            f"Downloaded file is too small to be a valid .keras archive (size={size} bytes): {path}\n"
+            "Fix: re-upload model or ensure the Drive link is public."
+        )
+
+    if _is_probably_html(path):
+        raise RuntimeError(
+            "Downloaded file looks like HTML (Google Drive page), not a .keras model.\n"
+            "Fix: Make the model file public (Anyone with link)."
+        )
+
 def _download_model_if_needed(file_id: str, filename: str) -> str:
+    """
+    Download model from Google Drive using gdown into MODEL_CACHE_DIR.
+    Validates file integrity and retries once.
+    """
     local_path = os.path.join(MODEL_CACHE_DIR, filename)
-    if not os.path.exists(local_path):
-        url = gdrive_direct_url(file_id)
+
+    # If exists but invalid, delete it
+    if os.path.exists(local_path):
         try:
-            gdown.download(url, local_path, quiet=True)
+            _validate_downloaded_file(local_path)
+            return local_path
+        except Exception:
+            try:
+                os.remove(local_path)
+            except Exception:
+                pass
+
+    url = f"https://drive.google.com/uc?id={file_id}"
+
+    # First attempt
+    try:
+        gdown.download(url, local_path, quiet=True, fuzzy=True)
+    except Exception as e:
+        raise RuntimeError(f"gdown failed downloading {filename}: {e}")
+
+    # Validate, if failed retry once with redownload
+    try:
+        _validate_downloaded_file(local_path)
+        return local_path
+    except Exception:
+        # Retry
+        try:
+            if os.path.exists(local_path):
+                os.remove(local_path)
+        except Exception:
+            pass
+
+        try:
+            gdown.download(url, local_path, quiet=True, fuzzy=True)
         except Exception as e:
-            st.error(f"Failed to download {filename} from Google Drive.\nError: {e}")
-            raise
+            raise RuntimeError(f"gdown retry failed downloading {filename}: {e}")
 
-    if not os.path.exists(local_path):
-        raise FileNotFoundError(local_path)
-
-    return local_path
-
+        _validate_downloaded_file(local_path)
+        return local_path
 
 def _try_load_model_robust(local_path: str):
     """
-    Robust loader for Streamlit Cloud.
-    Handles environments where TF_USE_LEGACY_KERAS is enabled.
+    Loads model with both Keras3 tf.keras and legacy tf_keras.
     """
-    # 1) Normal tf.keras load (Keras 3 path)
+    # 1) tf.keras (Keras 3)
     try:
         return tf.keras.models.load_model(local_path, compile=False, safe_mode=False)
     except Exception:
         pass
 
-    # 2) Legacy tf_keras load (when TF_USE_LEGACY_KERAS=True)
+    # 2) legacy tf_keras if enabled in env
     try:
         import tf_keras
         return tf_keras.models.load_model(local_path, compile=False, safe_mode=False)
     except Exception:
         pass
 
-    # 3) Last fallback: safe_mode default (sometimes helps certain archives)
-    try:
-        return tf.keras.models.load_model(local_path, compile=False)
-    except Exception:
-        pass
-
-    raise RuntimeError(
-        "Model load failed.\n"
-        "This usually happens due to TF/Keras serialization mismatch.\n"
-        "Fix: keep python-3.11, tensorflow==2.16.1, and install tf_keras==2.16.0.\n"
-        f"File: {local_path}"
-    )
-
-
+    # 3) last fallback
+    return tf.keras.models.load_model(local_path, compile=False)
 
 @st.cache_resource(show_spinner=False)
 def load_single_model(model_name: str):
     if model_name == "DenseNet121":
-        file_id = DENSENET_ID
-        fname = "bt1_model_a_densenet_best.keras"
+        file_id, fname = DENSENET_ID, "bt1_model_a_densenet_best.keras"
     elif model_name == "MobileNetV1":
-        file_id = MOBILENET_ID
-        fname = "bt1_model_b_mobilenet_best.keras"
+        file_id, fname = MOBILENET_ID, "bt1_model_b_mobilenet_best.keras"
     elif model_name == "ResNet50V2":
-        file_id = RESNET_ID
-        fname = "bt1_model_c_resnet_best.keras"
+        file_id, fname = RESNET_ID, "bt1_model_c_resnet_best.keras"
     else:
         raise ValueError(f"Unknown model_name: {model_name}")
 
     local_path = _download_model_if_needed(file_id, fname)
-    model = _try_load_model_robust(local_path)
-    return model
 
+    try:
+        model = _try_load_model_robust(local_path)
+    except Exception as e:
+        raise RuntimeError(
+            "Model load failed even after download validation.\n"
+            "Most likely the uploaded file is not a real .keras model archive.\n\n"
+            f"Local path: {local_path}\n"
+            f"Error: {e}\n\n"
+            "Fix checklist:\n"
+            "1) Ensure the Drive file is shared: Anyone with link (Viewer)\n"
+            "2) Ensure the file is a real Keras SavedModel archive (.keras) created by model.save('x.keras')\n"
+            "3) Re-upload the model if needed."
+        )
+
+    return model
 
 @st.cache_resource(show_spinner=False)
 def load_all_base_models():
@@ -135,7 +210,6 @@ def load_all_base_models():
     mb = load_single_model("MobileNetV1")
     rn = load_single_model("ResNet50V2")
     return {"DenseNet121": dn, "MobileNetV1": mb, "ResNet50V2": rn}
-
 
 # ------------------------------------------------------------
 # 3) IMAGE HELPERS
