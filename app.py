@@ -1,14 +1,12 @@
+
 # app.py — FHD-HybridNet Brain Tumor MRI (Streamlit, GitHub-ready)
 # - Uses sample_images/ from repo (you will commit images manually)
-# - Downloads 3 models (.h5) from Google Drive (gdown)
-# - Runs single model or FHD-HybridNet (Fuzzy Hellinger Distance) ensemble
-# - Grad-CAM:
-#     (A) Hook-based for Sequential([backbone, head...])  [your Colab style]
-#     (B) Robust fallback Grad-CAM for Functional/other models
-# - Brain mask + heatmap enhancement (your post-processing)
+# - Downloads 3 .h5 models from Google Drive (gdown)
+# - Runs single model or FHD-HybridNet (FHD ensemble)
+# - Grad-CAM (hook-based for Sequential([backbone, head...])) + brain mask + heatmap enhancement
 
 import os
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"   # quieter TF logs
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 
 import io
 import numpy as np
@@ -26,7 +24,7 @@ st.set_page_config(page_title="FHD-HybridNet Brain Tumor MRI", layout="wide")
 
 IMG_SIZE = (224, 224)
 
-# ⚠️ Must match training class order
+# ⚠️ Must match training class order (your split folders were sorted)
 CLASS_NAMES = ["glioma", "meningioma", "notumor", "pituitary"]
 
 SAMPLE_DIR = "sample_images"
@@ -34,35 +32,21 @@ MODEL_CACHE_DIR = "models_cache"
 os.makedirs(MODEL_CACHE_DIR, exist_ok=True)
 
 # ----------------------------
-# 1) GOOGLE DRIVE LINKS (H5)
+# 1) GOOGLE DRIVE MODEL IDs (.h5)
 # ----------------------------
-# Paste your NEW .h5 links here (either full link OR file id works)
-# Example full link: https://drive.google.com/file/d/<FILE_ID>/view?usp=sharing
-MODEL_H5_LINKS = {
-    "DenseNet121": "1U7KwBmM7syLrU_F1aK0XThiMbAdHmfLC",
-    "MobileNetV1": "1c5A7PQf7WF1ZiJFlHM3s6oFusQRvHjR0",
-    "ResNet50V2":  "1LJEBxqHg_t9dQp1g6BykXGBIc1e7xZT0",
-}
+# Replace these with your NEW .h5 file IDs (NOT the old .keras IDs).
+# Example share link:
+# https://drive.google.com/file/d/<FILE_ID>/view?usp=sharing
+
+H5_DENSENET_ID  = "1U7KwBmM7syLrU_F1aK0XThiMbAdHmfLC"
+H5_MOBILENET_ID = "1c5A7PQf7WF1ZiJFlHM3s6oFusQRvHjR0"
+H5_RESNET_ID    = "1LJEBxqHg_t9dQp1g6BykXGBIc1e7xZT0"
 
 MODEL_FILES = {
-    "DenseNet121": "bt_model_a.h5",
-    "MobileNetV1": "bt_model_b.h5",
-    "ResNet50V2":  "bt_model_c.h5",
+    "DenseNet121": ("bt_model_a_best.h5", H5_DENSENET_ID),
+    "MobileNetV1": ("bt_model_b_best.h5", H5_MOBILENET_ID),
+    "ResNet50V2":  ("bt_model_c_best.h5", H5_RESNET_ID),
 }
-
-def _extract_drive_id(link_or_id: str) -> str:
-    s = (link_or_id or "").strip()
-    if not s:
-        return ""
-    if "drive.google.com" in s:
-        # handle /file/d/<id>/
-        if "/file/d/" in s:
-            return s.split("/file/d/")[1].split("/")[0]
-        # handle ?id=<id>
-        if "id=" in s:
-            return s.split("id=")[1].split("&")[0]
-    # assume already an ID
-    return s
 
 def gdrive_direct_url(file_id: str) -> str:
     return f"https://drive.google.com/uc?id={file_id}"
@@ -80,19 +64,15 @@ def _validate_download(path: str):
         raise FileNotFoundError(f"File missing after download: {path}")
 
     size = os.path.getsize(path)
-    if size < 50_000:
+    # .h5 can be smaller than .keras sometimes, so keep this low
+    if size < 10_000:
         if _is_probably_html(path):
             raise RuntimeError(
-                "Downloaded file looks like an HTML page (Google Drive permission/confirm page), not a model.\n\n"
-                "Fix:\n"
-                "1) In Google Drive -> Share -> Anyone with the link (Viewer)\n"
-                "2) Use the correct file link/ID\n"
-                f"\nBad file: {path} ({size} bytes)"
+                "Downloaded file looks like an HTML page (Google Drive permission page), not a model.\n"
+                "Fix: Drive -> Share -> Anyone with the link (Viewer)\n"
+                f"Bad file: {path} ({size} bytes)"
             )
-        raise RuntimeError(
-            f"Downloaded file too small to be a valid model: {path} ({size} bytes).\n"
-            "Fix: re-upload model, ensure link is public."
-        )
+        raise RuntimeError(f"Downloaded file too small to be valid: {path} ({size} bytes)")
 
     if _is_probably_html(path):
         raise RuntimeError(
@@ -100,14 +80,9 @@ def _validate_download(path: str):
             "Fix: Make the file public: Anyone with the link (Viewer)."
         )
 
-def _download_if_needed(link_or_id: str, filename: str) -> str:
-    file_id = _extract_drive_id(link_or_id)
-    if not file_id:
-        raise RuntimeError(f"Missing Drive link/ID for model file: {filename}")
-
+def _download_if_needed(file_id: str, filename: str) -> str:
     local_path = os.path.join(MODEL_CACHE_DIR, filename)
 
-    # If exists, validate. If invalid remove and redownload.
     if os.path.exists(local_path):
         try:
             _validate_download(local_path)
@@ -119,33 +94,35 @@ def _download_if_needed(link_or_id: str, filename: str) -> str:
                 pass
 
     url = gdrive_direct_url(file_id)
-
-    # Download with fuzzy=True (handles some GDrive patterns)
     gdown.download(url, local_path, quiet=True, fuzzy=True)
     _validate_download(local_path)
     return local_path
 
-def _try_load_model_h5(local_path: str):
-    # H5 loads most reliably with tf.keras
+def _try_load_h5(local_path: str):
+    # For .h5: use tf.keras loader
     try:
         return tf.keras.models.load_model(local_path, compile=False)
     except Exception as e:
         raise RuntimeError(
-            "Model load failed.\n\n"
-            f"File: {local_path}\n"
+            "Model load failed (.h5).\n\n"
+            f"File: {local_path}\n\n"
             f"Error: {e}\n\n"
             "Fix checklist:\n"
-            "1) Ensure you converted .keras -> .h5 correctly in Colab\n"
-            "2) Ensure Drive file is public (Anyone with link)\n"
-            "3) Ensure the link/ID is correct\n"
+            "1) Confirm you uploaded a real .h5 model exported from Colab\n"
+            "2) Confirm you replaced the IDs in app.py with the .h5 IDs\n"
+            "3) Confirm Drive sharing: Anyone with the link (Viewer)\n"
         )
 
 @st.cache_resource(show_spinner=False)
 def load_single_model(model_name: str):
-    link_or_id = MODEL_H5_LINKS[model_name]
-    fname = MODEL_FILES[model_name]
-    local_path = _download_if_needed(link_or_id, fname)
-    return _try_load_model_h5(local_path)
+    fname, file_id = MODEL_FILES[model_name]
+    if "PASTE_YOUR" in file_id:
+        raise RuntimeError(
+            f"You didn't set the Google Drive file ID for {model_name}.\n"
+            "Open app.py and replace H5_*_ID with your real .h5 file IDs."
+        )
+    local_path = _download_if_needed(file_id, fname)
+    return _try_load_h5(local_path)
 
 @st.cache_resource(show_spinner=False)
 def load_all_models():
@@ -169,7 +146,7 @@ def load_image_from_file(file_or_path, img_size=IMG_SIZE):
     return img, batch
 
 # ----------------------------
-# 3) GRAD-CAM HELPERS (your post-processing)
+# 3) GRAD-CAM HELPERS (your method)
 # ----------------------------
 def make_brain_mask_from_image(orig_pil):
     img = np.array(orig_pil.convert("L"))
@@ -230,8 +207,8 @@ def overlay_gradcam_on_image_fixed(heatmap, orig_image, alpha=0.45):
     overlay = np.clip(overlay, 0.0, 1.0)
     return overlay
 
-# ---------- Grad-CAM A: Hook-based (works for Sequential([backbone, head...])) ----------
 def get_backbone(seq_model):
+    # expects Sequential([backbone, head...]) like your training notebook
     if hasattr(seq_model, "layers") and len(seq_model.layers) >= 2:
         return seq_model.layers[0]
     return None
@@ -255,14 +232,14 @@ def pick_rank4_feature_layer(backbone, input_shape=(224, 224, 3)):
             pass
 
     if not candidates:
-        raise ValueError("No rank-4 feature layer found in backbone.")
+        raise ValueError("No rank-4 feature layer found in backbone (no HxWxC feature map).")
     candidates.sort(key=lambda x: (x[0], x[1]))
     return candidates[-1][2]
 
 def gradcam_hooked(seq_model, img_batch, class_index=None):
     backbone = get_backbone(seq_model)
     if backbone is None:
-        raise ValueError("Not Sequential([backbone, head...]).")
+        raise ValueError("Model is not Sequential([backbone, head...]). Cannot run this Grad-CAM method.")
 
     feat_layer_name = pick_rank4_feature_layer(backbone, input_shape=(IMG_SIZE[0], IMG_SIZE[1], 3))
     target_layer = backbone.get_layer(feat_layer_name)
@@ -278,11 +255,13 @@ def gradcam_hooked(seq_model, img_batch, class_index=None):
     target_layer.call = wrapped_call
 
     x = tf.convert_to_tensor(img_batch, dtype=tf.float32)
+
     with tf.GradientTape() as tape:
         preds = seq_model(x, training=False)
         if class_index is None:
             class_index = int(tf.argmax(preds[0]))
         loss = preds[:, class_index]
+
         if conv_out["val"] is None:
             _ = seq_model(x, training=False)
         tape.watch(conv_out["val"])
@@ -291,7 +270,7 @@ def gradcam_hooked(seq_model, img_batch, class_index=None):
     target_layer.call = original_call
 
     if conv_out["val"] is None or grads is None:
-        raise RuntimeError("Failed to capture feature map/gradients.")
+        raise RuntimeError("Failed to capture feature map/gradients for Grad-CAM.")
 
     pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
     conv_map = conv_out["val"][0]
@@ -299,56 +278,11 @@ def gradcam_hooked(seq_model, img_batch, class_index=None):
     heatmap = tf.reduce_sum(conv_map * pooled_grads, axis=-1)
     heatmap = tf.maximum(heatmap, 0)
     heatmap = heatmap / (tf.reduce_max(heatmap) + 1e-8)
+
     return heatmap.numpy(), feat_layer_name
 
-# ---------- Grad-CAM B: Robust fallback (Functional models etc.) ----------
-def _find_last_rank4_layer(model):
-    # Prefer Conv-like or any rank-4 layer
-    for layer in reversed(model.layers):
-        try:
-            out = layer.output
-            if out is None:
-                continue
-            if len(out.shape) == 4:
-                return layer.name
-        except Exception:
-            continue
-    raise ValueError("No rank-4 layer found for Grad-CAM fallback.")
-
-def gradcam_fallback(model, img_batch, class_index=None):
-    # Build grad model from a rank-4 layer
-    layer_name = _find_last_rank4_layer(model)
-    target = model.get_layer(layer_name)
-
-    grad_model = tf.keras.models.Model(model.inputs, [target.output, model.output])
-
-    x = tf.convert_to_tensor(img_batch, dtype=tf.float32)
-    with tf.GradientTape() as tape:
-        conv_out, preds = grad_model(x, training=False)
-        if isinstance(preds, (list, tuple)):
-            preds = preds[0]
-        if class_index is None:
-            class_index = int(tf.argmax(preds[0]))
-        loss = preds[:, class_index]
-
-    grads = tape.gradient(loss, conv_out)
-    pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
-    conv_map = conv_out[0]
-
-    heatmap = tf.reduce_sum(conv_map * pooled_grads, axis=-1)
-    heatmap = tf.maximum(heatmap, 0)
-    heatmap = heatmap / (tf.reduce_max(heatmap) + 1e-8)
-    return heatmap.numpy(), layer_name
-
-def gradcam_any(model, img_batch, class_index=None):
-    # Try hooked first; if not Sequential, fallback
-    try:
-        return gradcam_hooked(model, img_batch, class_index=class_index)
-    except Exception:
-        return gradcam_fallback(model, img_batch, class_index=class_index)
-
 # ----------------------------
-# 4) FHD ENSEMBLE HELPERS
+# 4) FHD ENSEMBLE
 # ----------------------------
 def fuzzy_hellinger_distance(p1, p2):
     return 0.5 * np.sum((np.sqrt(p1) - np.sqrt(p2)) ** 2)
@@ -397,10 +331,9 @@ if source == "Upload MRI":
     if uploaded is not None:
         chosen_file = uploaded
 else:
+    gallery_files = []
     if os.path.isdir(SAMPLE_DIR):
         gallery_files = sorted([f for f in os.listdir(SAMPLE_DIR) if f.lower().endswith((".png", ".jpg", ".jpeg", ".webp"))])
-    else:
-        gallery_files = []
 
     if gallery_files:
         sample_name = st.sidebar.selectbox("Pick a sample image", gallery_files)
@@ -422,12 +355,6 @@ to classify Brain Tumor MRI scans into **four classes**.
 """
 )
 
-col_info, _ = st.columns([1, 1])
-with col_info:
-    st.info("👈 Select a model & image, then click **Run prediction**.")
-    st.write(f"**Model:** {model_name}")
-    st.write(f"**Source:** {source}")
-
 if not run_button:
     st.stop()
 
@@ -440,36 +367,24 @@ if chosen_file is None:
 # ----------------------------
 orig_img, batch = load_image_from_file(chosen_file, IMG_SIZE)
 
-try:
-    with st.spinner("Running prediction…"):
-        if model_name == "FHD-HybridNet":
-            probs, pred_idx, chosen_key, grad_model = run_fhd_ensemble(batch)
-            cam_title = f"FHD-HybridNet (chosen: {chosen_key})"
-        else:
-            model = load_single_model(model_name)
-            probs = model.predict(batch, verbose=0)[0]
-            pred_idx = int(np.argmax(probs))
-            grad_model = model
-            cam_title = model_name
+with st.spinner("Running prediction…"):
+    if model_name == "FHD-HybridNet":
+        probs, pred_idx, chosen_key, grad_model = run_fhd_ensemble(batch)
+        cam_title = f"FHD-HybridNet (chosen: {chosen_key})"
+    else:
+        model = load_single_model(model_name)
+        probs = model.predict(batch, verbose=0)[0]
+        pred_idx = int(np.argmax(probs))
+        grad_model = model
+        cam_title = model_name
 
-    pred_class = CLASS_NAMES[pred_idx]
+pred_class = CLASS_NAMES[pred_idx]
 
-    with st.spinner("Computing Grad-CAM…"):
-        heatmap, feat_layer_name = gradcam_any(grad_model, batch, class_index=pred_idx)
-        brain_mask = make_brain_mask_from_image(orig_img)
-        heatmap2 = enhance_heatmap(
-            heatmap,
-            brain_mask=brain_mask,
-            gamma=1.8,
-            keep_percentile=85,
-            keep_largest_blob=True
-        )
-        overlay = overlay_gradcam_on_image_fixed(heatmap2, orig_img, alpha=0.45)
-
-except Exception as e:
-    st.error("❌ Inference failed.")
-    st.code(str(e))
-    st.stop()
+with st.spinner("Computing Grad-CAM…"):
+    heatmap, feat_layer_name = gradcam_hooked(grad_model, batch, class_index=pred_idx)
+    brain_mask = make_brain_mask_from_image(orig_img)
+    heatmap2 = enhance_heatmap(heatmap, brain_mask=brain_mask, gamma=1.8, keep_percentile=85, keep_largest_blob=True)
+    overlay = overlay_gradcam_on_image_fixed(heatmap2, orig_img, alpha=0.45)
 
 # ----------------------------
 # 8) OUTPUT
