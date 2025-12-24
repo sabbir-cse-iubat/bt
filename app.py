@@ -1,9 +1,15 @@
-
 # app.py — FHD-HybridNet Brain Tumor MRI (Streamlit, GitHub-ready)
-# - Uses sample_images/ from repo (you will commit images manually)
-# - Downloads 3 .h5 models from Google Drive (gdown)
-# - Runs single model or FHD-HybridNet (FHD ensemble)
-# - Grad-CAM (hook-based for Sequential([backbone, head...])) + brain mask + heatmap enhancement
+# ✅ Uses sample_images/ from repo (you will commit images manually)
+# ✅ Downloads 3 models from Google Drive (.h5) using gdown
+# ✅ FIX for: "dense expects 1 input(s), but it received 2 input tensors"
+#    -> We DO NOT deserialize the .h5 model graph.
+#    -> We rebuild the exact architecture in code and load ONLY weights from the .h5 file.
+#
+# Notes:
+# - Keep Python 3.11 on Streamlit Cloud (runtime.txt: python-3.11)
+# - requirements: tensorflow==2.16.1 works on Streamlit Cloud Python 3.11
+# - Your training architecture (for model_a): DenseNet121 include_top=False + GAP + Dense/BN/Dropout + Dense + Dense
+# - This file rebuilds for DenseNet121, MobileNet (V1), ResNet50V2 and loads weights from .h5
 
 import os
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
@@ -24,7 +30,8 @@ st.set_page_config(page_title="FHD-HybridNet Brain Tumor MRI", layout="wide")
 
 IMG_SIZE = (224, 224)
 
-# ⚠️ Must match training class order (your split folders were sorted)
+# ⚠️ Must match training folder order used by flow_from_directory (sorted folder names).
+# From your split code: classes = sorted([...]) so this should be sorted class folder names.
 CLASS_NAMES = ["glioma", "meningioma", "notumor", "pituitary"]
 
 SAMPLE_DIR = "sample_images"
@@ -32,11 +39,12 @@ MODEL_CACHE_DIR = "models_cache"
 os.makedirs(MODEL_CACHE_DIR, exist_ok=True)
 
 # ----------------------------
-# 1) GOOGLE DRIVE MODEL IDs (.h5)
+# 1) GOOGLE DRIVE IDs (.h5)
 # ----------------------------
-# Replace these with your NEW .h5 file IDs (NOT the old .keras IDs).
-# Example share link:
+# Put your H5 file IDs here (NOT the old .keras IDs).
+# If your link is:
 # https://drive.google.com/file/d/<FILE_ID>/view?usp=sharing
+# then FILE_ID is what you paste below.
 
 H5_DENSENET_ID  = "1U7KwBmM7syLrU_F1aK0XThiMbAdHmfLC"
 H5_MOBILENET_ID = "1c5A7PQf7WF1ZiJFlHM3s6oFusQRvHjR0"
@@ -62,25 +70,23 @@ def _is_probably_html(path: str) -> bool:
 def _validate_download(path: str):
     if not os.path.exists(path):
         raise FileNotFoundError(f"File missing after download: {path}")
-
     size = os.path.getsize(path)
-    # .h5 can be smaller than .keras sometimes, so keep this low
-    if size < 10_000:
-        if _is_probably_html(path):
-            raise RuntimeError(
-                "Downloaded file looks like an HTML page (Google Drive permission page), not a model.\n"
-                "Fix: Drive -> Share -> Anyone with the link (Viewer)\n"
-                f"Bad file: {path} ({size} bytes)"
-            )
-        raise RuntimeError(f"Downloaded file too small to be valid: {path} ({size} bytes)")
-
-    if _is_probably_html(path):
+    if size < 50_000 or _is_probably_html(path):
         raise RuntimeError(
-            "Downloaded file looks like HTML (Drive page), not a real model.\n"
-            "Fix: Make the file public: Anyone with the link (Viewer)."
+            "Downloaded file is not a valid .h5 model/weights file.\n\n"
+            "Fix:\n"
+            "1) Google Drive -> Share -> Anyone with the link (Viewer)\n"
+            "2) Use correct FILE_ID\n"
+            f"Bad file: {path} ({size} bytes)"
         )
 
 def _download_if_needed(file_id: str, filename: str) -> str:
+    if not file_id or "PASTE_" in file_id:
+        raise RuntimeError(
+            "You did not set the H5_*_ID values in app.py.\n"
+            "Open app.py and replace H5_DENSENET_ID / H5_MOBILENET_ID / H5_RESNET_ID with your real .h5 file IDs."
+        )
+
     local_path = os.path.join(MODEL_CACHE_DIR, filename)
 
     if os.path.exists(local_path):
@@ -98,31 +104,74 @@ def _download_if_needed(file_id: str, filename: str) -> str:
     _validate_download(local_path)
     return local_path
 
-def _try_load_h5(local_path: str):
-    # For .h5: use tf.keras loader
+# ----------------------------
+# 2) BUILD MODELS (exact training-style head)
+# ----------------------------
+def _build_head(backbone, num_classes=4):
+    # same head style as your training notebook
+    return tf.keras.Sequential([
+        backbone,
+        tf.keras.layers.GlobalAveragePooling2D(),
+        tf.keras.layers.Dense(256, activation="relu"),
+        tf.keras.layers.BatchNormalization(),
+        tf.keras.layers.Dropout(0.4),
+        tf.keras.layers.Dense(256, activation="relu"),
+        tf.keras.layers.Dense(num_classes, activation="softmax"),
+    ])
+
+def build_model_by_name(model_name: str, input_shape=(224, 224, 3), num_classes=4):
+    if model_name == "DenseNet121":
+        backbone = tf.keras.applications.DenseNet121(
+            include_top=False, weights=None, input_shape=input_shape
+        )
+        return _build_head(backbone, num_classes=num_classes)
+
+    if model_name == "MobileNetV1":
+        # MobileNet (V1)
+        backbone = tf.keras.applications.MobileNet(
+            include_top=False, weights=None, input_shape=input_shape
+        )
+        return _build_head(backbone, num_classes=num_classes)
+
+    if model_name == "ResNet50V2":
+        backbone = tf.keras.applications.ResNet50V2(
+            include_top=False, weights=None, input_shape=input_shape
+        )
+        return _build_head(backbone, num_classes=num_classes)
+
+    raise ValueError(f"Unknown model_name: {model_name}")
+
+def load_model_weights_safe(model_name: str, h5_path: str):
+    """
+    ✅ Fix for your error:
+    - We rebuild the architecture in code
+    - Then load only the weights from .h5
+    This avoids deserializing broken/unsupported graph configs.
+    """
+    model = build_model_by_name(model_name, input_shape=(IMG_SIZE[0], IMG_SIZE[1], 3), num_classes=len(CLASS_NAMES))
+    # build model once
+    _ = model(tf.zeros((1, IMG_SIZE[0], IMG_SIZE[1], 3), dtype=tf.float32), training=False)
+
     try:
-        return tf.keras.models.load_model(local_path, compile=False)
+        model.load_weights(h5_path)
     except Exception as e:
         raise RuntimeError(
-            "Model load failed (.h5).\n\n"
-            f"File: {local_path}\n\n"
-            f"Error: {e}\n\n"
-            "Fix checklist:\n"
-            "1) Confirm you uploaded a real .h5 model exported from Colab\n"
-            "2) Confirm you replaced the IDs in app.py with the .h5 IDs\n"
-            "3) Confirm Drive sharing: Anyone with the link (Viewer)\n"
+            "Failed to load weights from .h5.\n\n"
+            f"Model: {model_name}\nFile: {h5_path}\n\nError: {e}\n\n"
+            "Make sure you exported the .h5 from Colab using:\n"
+            "  model.save('x.h5')  OR  model.save_weights('x.h5')\n"
+            "If you used save_weights, that's perfect for this app.\n"
         )
+    return model
 
 @st.cache_resource(show_spinner=False)
 def load_single_model(model_name: str):
     fname, file_id = MODEL_FILES[model_name]
-    if "PASTE_YOUR" in file_id:
-        raise RuntimeError(
-            f"You didn't set the Google Drive file ID for {model_name}.\n"
-            "Open app.py and replace H5_*_ID with your real .h5 file IDs."
-        )
     local_path = _download_if_needed(file_id, fname)
-    return _try_load_h5(local_path)
+
+    # IMPORTANT: do NOT deserialize model graph from H5 (that triggers your error)
+    model = load_model_weights_safe(model_name, local_path)
+    return model
 
 @st.cache_resource(show_spinner=False)
 def load_all_models():
@@ -133,7 +182,7 @@ def load_all_models():
     }
 
 # ----------------------------
-# 2) IMAGE HELPERS
+# 3) IMAGE HELPERS
 # ----------------------------
 def load_image_from_file(file_or_path, img_size=IMG_SIZE):
     if isinstance(file_or_path, str):
@@ -146,7 +195,7 @@ def load_image_from_file(file_or_path, img_size=IMG_SIZE):
     return img, batch
 
 # ----------------------------
-# 3) GRAD-CAM HELPERS (your method)
+# 4) GRAD-CAM (your method)
 # ----------------------------
 def make_brain_mask_from_image(orig_pil):
     img = np.array(orig_pil.convert("L"))
@@ -208,7 +257,7 @@ def overlay_gradcam_on_image_fixed(heatmap, orig_image, alpha=0.45):
     return overlay
 
 def get_backbone(seq_model):
-    # expects Sequential([backbone, head...]) like your training notebook
+    # Sequential([backbone, head...])
     if hasattr(seq_model, "layers") and len(seq_model.layers) >= 2:
         return seq_model.layers[0]
     return None
@@ -232,7 +281,7 @@ def pick_rank4_feature_layer(backbone, input_shape=(224, 224, 3)):
             pass
 
     if not candidates:
-        raise ValueError("No rank-4 feature layer found in backbone (no HxWxC feature map).")
+        raise ValueError("No rank-4 feature layer found in backbone.")
     candidates.sort(key=lambda x: (x[0], x[1]))
     return candidates[-1][2]
 
@@ -282,7 +331,7 @@ def gradcam_hooked(seq_model, img_batch, class_index=None):
     return heatmap.numpy(), feat_layer_name
 
 # ----------------------------
-# 4) FHD ENSEMBLE
+# 5) FHD ENSEMBLE
 # ----------------------------
 def fuzzy_hellinger_distance(p1, p2):
     return 0.5 * np.sum((np.sqrt(p1) - np.sqrt(p2)) ** 2)
@@ -313,7 +362,7 @@ def run_fhd_ensemble(img_batch):
     return probs, pred_idx, chosen_key, grad_model
 
 # ----------------------------
-# 5) SIDEBAR UI
+# 6) SIDEBAR UI
 # ----------------------------
 st.sidebar.title("Controls")
 
@@ -344,7 +393,7 @@ else:
 run_button = st.sidebar.button("▶ Run prediction")
 
 # ----------------------------
-# 6) MAIN HEADER
+# 7) MAIN
 # ----------------------------
 st.title("FHD-HybridNet Brain Tumor MRI Classification")
 st.markdown(
@@ -362,29 +411,32 @@ if chosen_file is None:
     st.error("Please upload or select an image first.")
     st.stop()
 
-# ----------------------------
-# 7) RUN INFERENCE
-# ----------------------------
 orig_img, batch = load_image_from_file(chosen_file, IMG_SIZE)
 
-with st.spinner("Running prediction…"):
-    if model_name == "FHD-HybridNet":
-        probs, pred_idx, chosen_key, grad_model = run_fhd_ensemble(batch)
-        cam_title = f"FHD-HybridNet (chosen: {chosen_key})"
-    else:
-        model = load_single_model(model_name)
-        probs = model.predict(batch, verbose=0)[0]
-        pred_idx = int(np.argmax(probs))
-        grad_model = model
-        cam_title = model_name
+try:
+    with st.spinner("Running prediction…"):
+        if model_name == "FHD-HybridNet":
+            probs, pred_idx, chosen_key, grad_model = run_fhd_ensemble(batch)
+            cam_title = f"FHD-HybridNet (chosen: {chosen_key})"
+        else:
+            model = load_single_model(model_name)
+            probs = model.predict(batch, verbose=0)[0]
+            pred_idx = int(np.argmax(probs))
+            grad_model = model
+            cam_title = model_name
 
-pred_class = CLASS_NAMES[pred_idx]
+    pred_class = CLASS_NAMES[pred_idx]
 
-with st.spinner("Computing Grad-CAM…"):
-    heatmap, feat_layer_name = gradcam_hooked(grad_model, batch, class_index=pred_idx)
-    brain_mask = make_brain_mask_from_image(orig_img)
-    heatmap2 = enhance_heatmap(heatmap, brain_mask=brain_mask, gamma=1.8, keep_percentile=85, keep_largest_blob=True)
-    overlay = overlay_gradcam_on_image_fixed(heatmap2, orig_img, alpha=0.45)
+    with st.spinner("Computing Grad-CAM…"):
+        heatmap, feat_layer_name = gradcam_hooked(grad_model, batch, class_index=pred_idx)
+        brain_mask = make_brain_mask_from_image(orig_img)
+        heatmap2 = enhance_heatmap(heatmap, brain_mask=brain_mask, gamma=1.8, keep_percentile=85, keep_largest_blob=True)
+        overlay = overlay_gradcam_on_image_fixed(heatmap2, orig_img, alpha=0.45)
+
+except Exception as e:
+    st.error("❌ Inference failed.")
+    st.code(str(e))
+    st.stop()
 
 # ----------------------------
 # 8) OUTPUT
