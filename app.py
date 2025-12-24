@@ -46,13 +46,13 @@ os.makedirs(MODEL_CACHE_DIR, exist_ok=True)
 # 1) GOOGLE DRIVE LINKS (IDs)
 # ----------------------------
 # Your links:
-# model a : https://drive.google.com/file/d/1IVbNJA_TKFsT9ZftiWyihxp6CYSoJxwd/view
-# model b : https://drive.google.com/file/d/1MOXJSc3GuHoq4T7ZIPKNqyDF3r33_pml/view
-# model c : https://drive.google.com/file/d/1zgfjc0JTIe1Xg24rcWTT7zym9FL2MObF/view
+# model a : https://drive.google.com/file/d/1U7KwBmM7syLrU_F1aK0XThiMbAdHmfLC/view?usp=drive_link
+# model b : https://drive.google.com/file/d/1c5A7PQf7WF1ZiJFlHM3s6oFusQRvHjR0/view?usp=drive_link
+# model c : https://drive.google.com/file/d/1LJEBxqHg_t9dQp1g6BykXGBIc1e7xZT0/view?usp=drive_link
 
-DENSENET_ID  = "1IVbNJA_TKFsT9ZftiWyihxp6CYSoJxwd"
-MOBILENET_ID = "1MOXJSc3GuHoq4T7ZIPKNqyDF3r33_pml"
-RESNET_ID    = "1zgfjc0JTIe1Xg24rcWTT7zym9FL2MObF"
+DENSENET_ID  = "1U7KwBmM7syLrU_F1aK0XThiMbAdHmfLC"
+MOBILENET_ID = "1c5A7PQf7WF1ZiJFlHM3s6oFusQRvHjR0"
+RESNET_ID    = "1LJEBxqHg_t9dQp1g6BykXGBIc1e7xZT0"
 
 MODEL_FILES = {
     "DenseNet121": ("bt_model_a.keras", DENSENET_ID),
