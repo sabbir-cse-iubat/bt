@@ -298,7 +298,8 @@ def gradcam_hooked(seq_model, img_batch, class_index=None):
     heatmap = tf.maximum(heatmap, 0)
     heatmap = heatmap / (tf.reduce_max(heatmap) + 1e-8)
 
-    return heatmap.numpy(), feat_layer_name, preds.numpy()[0]
+    return heatmap.numpy(), preds.numpy()[0]
+
 
 # ----------------------------
 # 5) FHD ENSEMBLE (same logic)
@@ -401,7 +402,7 @@ try:
     pred_class = CLASS_NAMES[pred_idx]
 
     with st.spinner("Computing Grad-CAM…"):
-        heatmap, feat_layer_name, _ = gradcam_hooked(cam_model, batch, class_index=pred_idx)
+        heatmap, _ = gradcam_hooked(cam_model, batch, class_index=pred_idx)
         brain_mask = make_brain_mask_from_image(orig_img)
         heatmap2 = enhance_heatmap(heatmap, brain_mask=brain_mask, gamma=1.8, keep_percentile=85, keep_largest_blob=True)
         overlay = overlay_gradcam_on_image_fixed(heatmap2, orig_img, alpha=0.45)
@@ -424,7 +425,7 @@ axes[0].set_title(f"Original\nPredicted: {pred_class}")
 axes[0].axis("off")
 
 axes[1].imshow(overlay)
-axes[1].set_title(f"Grad-CAM\n{cam_title}\nfeat: {feat_layer_name}")
+axes[1].set_title(f"Grad-CAM\n{cam_title}")
 axes[1].axis("off")
 
 axes[2].barh(CLASS_NAMES, probs)
