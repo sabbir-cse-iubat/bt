@@ -1,86 +1,69 @@
-# app.py — FHD-HybridNet Brain Tumor MRI (Streamlit + GitHub-ready)
-# FIXES:
-# 1) Removes sample_images Drive ZIP logic (you will commit images to repo manually)
-# 2) Adds robust model loader to fix Keras/TensorFlow deserialization mismatch
-#    (common on Streamlit Cloud when "keras" (Keras 3) conflicts with tf.keras)
+# app.py — FHD-HybridNet Brain Tumor MRI (Streamlit, GitHub-ready)
+# - Uses sample_images/ from repo (you will commit images manually)
+# - Downloads 3 models from Google Drive (gdown)
+# - Runs single model or FHD-HybridNet ensemble
+# - Grad-CAM (hook-based for Sequential([backbone, head...])) + brain mask + heatmap enhancement
 #
-# IMPORTANT RECOMMENDATION (deployment):
-# - Streamlit Cloud should run Python 3.10/3.11 for TensorFlow stability.
-# - Do NOT use Python 3.13 for TensorFlow unless you know exactly what you're doing.
+# IMPORTANT:
+# - Streamlit Cloud should use Python 3.10/3.11 for TensorFlow stability.
+# - Keep TF_USE_LEGACY_KERAS = 0 (Keras 3)
 #
-# ------------------------------------------------------------
+# If you get: "dense expects 1 input but got 2"
+# -> Your saved .keras is not loading cleanly in this environment.
+# -> Fix without retrain: load in Colab then export to .h5, upload to Drive, update IDs.
+
 import os
-# Force Keras 3 (disable legacy tf_keras)
 os.environ["TF_USE_LEGACY_KERAS"] = "0"
-
-
-# Force TF to use legacy Keras if available (helps when standalone `keras` v3 conflicts)
-# Must be set BEFORE importing tensorflow.
-os.environ.setdefault("TF_USE_LEGACY_KERAS", "1")
-os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
-import tensorflow as tf
-import keras
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 
 import io
+import time
 import numpy as np
 from PIL import Image
 import streamlit as st
-import tensorflow as tf
 import matplotlib.pyplot as plt
-import gdown
 import cv2
-import datetime
+import gdown
+import tensorflow as tf
+import keras  # Keras 3 (works with TF 2.16+)
 
-# ------------------------------------------------------------
+# ----------------------------
 # 0) BASIC SETUP
-# ------------------------------------------------------------
-st.set_page_config(
-    page_title="FHD-HybridNet Brain Tumor MRI",
-    layout="wide"
-)
+# ----------------------------
+st.set_page_config(page_title="FHD-HybridNet Brain Tumor MRI", layout="wide")
 
 IMG_SIZE = (224, 224)
 
-# If your training used a different class order, update this to match training order.
+# ⚠️ Must match training class order.
+# If your training generator had different order, update it accordingly.
 CLASS_NAMES = ["glioma", "meningioma", "notumor", "pituitary"]
 
 SAMPLE_DIR = "sample_images"
-os.makedirs(SAMPLE_DIR, exist_ok=True)
-
 MODEL_CACHE_DIR = "models_cache"
 os.makedirs(MODEL_CACHE_DIR, exist_ok=True)
 
-# ------------------------------------------------------------
-# 1) GOOGLE DRIVE MODEL LINKS (YOUR FILE IDs)
-# ------------------------------------------------------------
-DENSENET_ID  = "1IVbNJA_TKFsT9ZftiWyihxp6CYSoJxwd"  # model_a best_model.keras
-MOBILENET_ID = "1MOXJSc3GuHoq4T7ZIPKNqyDF3r33_pml"  # model_b best_model.keras
-RESNET_ID    = "1zgfjc0JTIe1Xg24rcWTT7zym9FL2MObF"  # model_c best_model.keras
+# ----------------------------
+# 1) GOOGLE DRIVE LINKS (IDs)
+# ----------------------------
+# Your links:
+# model a : https://drive.google.com/file/d/1IVbNJA_TKFsT9ZftiWyihxp6CYSoJxwd/view
+# model b : https://drive.google.com/file/d/1MOXJSc3GuHoq4T7ZIPKNqyDF3r33_pml/view
+# model c : https://drive.google.com/file/d/1zgfjc0JTIe1Xg24rcWTT7zym9FL2MObF/view
 
-
-def gdrive_direct_url(file_id: str) -> str:
-    return f"https://drive.google.com/uc?id={file_id}"
-
-import os
-import gdown
-import tensorflow as tf
-import streamlit as st
-
-# ---------------------------
-# Model cache dir
-# ---------------------------
-MODEL_CACHE_DIR = "models_cache"
-os.makedirs(MODEL_CACHE_DIR, exist_ok=True)
-
-# ---------------------------
-# Google Drive file IDs (from your links)
-# ---------------------------
 DENSENET_ID  = "1IVbNJA_TKFsT9ZftiWyihxp6CYSoJxwd"
 MOBILENET_ID = "1MOXJSc3GuHoq4T7ZIPKNqyDF3r33_pml"
 RESNET_ID    = "1zgfjc0JTIe1Xg24rcWTT7zym9FL2MObF"
 
+MODEL_FILES = {
+    "DenseNet121": ("bt_model_a.keras", DENSENET_ID),
+    "MobileNetV1": ("bt_model_b.keras", MOBILENET_ID),
+    "ResNet50V2":  ("bt_model_c.keras", RESNET_ID),
+}
+
+def gdrive_direct_url(file_id: str) -> str:
+    return f"https://drive.google.com/uc?id={file_id}"
+
 def _is_probably_html(path: str) -> bool:
-    """Detect if downloaded file is actually an HTML page."""
     try:
         with open(path, "rb") as f:
             head = f.read(4096).lower()
@@ -88,42 +71,38 @@ def _is_probably_html(path: str) -> bool:
     except Exception:
         return False
 
-def _validate_downloaded_file(path: str):
-    """Raise helpful error if download is broken."""
+def _validate_download(path: str):
     if not os.path.exists(path):
-        raise FileNotFoundError(f"File not found after download: {path}")
+        raise FileNotFoundError(f"File missing after download: {path}")
 
     size = os.path.getsize(path)
-    if size < 50_000:  # .keras is a zip; usually much larger than this
-        # could still be tiny model, but very unlikely for DenseNet etc.
+    if size < 50_000:
         if _is_probably_html(path):
             raise RuntimeError(
-                "Downloaded file looks like HTML (Google Drive confirmation page), not a .keras model.\n"
-                "Fix: In Google Drive, set the file sharing to: Anyone with the link (Viewer).\n"
-                f"Bad file: {path} (size={size} bytes)"
+                "Downloaded file looks like an HTML page (Google Drive permission/confirm page), not a model.\n\n"
+                "Fix:\n"
+                "1) In Google Drive -> Share -> Anyone with the link (Viewer)\n"
+                "2) Use the correct file ID\n"
+                f"\nBad file: {path} ({size} bytes)"
             )
         raise RuntimeError(
-            f"Downloaded file is too small to be a valid .keras archive (size={size} bytes): {path}\n"
-            "Fix: re-upload model or ensure the Drive link is public."
+            f"Downloaded file too small to be a valid model archive: {path} ({size} bytes).\n"
+            "Fix: re-upload model, ensure link is public."
         )
 
     if _is_probably_html(path):
         raise RuntimeError(
-            "Downloaded file looks like HTML (Google Drive page), not a .keras model.\n"
-            "Fix: Make the model file public (Anyone with link)."
+            "Downloaded file looks like HTML (Drive page), not a real model.\n"
+            "Fix: Make the file public: Anyone with the link (Viewer)."
         )
 
-def _download_model_if_needed(file_id: str, filename: str) -> str:
-    """
-    Download model from Google Drive using gdown into MODEL_CACHE_DIR.
-    Validates file integrity and retries once.
-    """
+def _download_if_needed(file_id: str, filename: str) -> str:
     local_path = os.path.join(MODEL_CACHE_DIR, filename)
 
-    # If exists but invalid, delete it
+    # If exists, validate. If invalid remove and redownload.
     if os.path.exists(local_path):
         try:
-            _validate_downloaded_file(local_path)
+            _validate_download(local_path)
             return local_path
         except Exception:
             try:
@@ -131,105 +110,73 @@ def _download_model_if_needed(file_id: str, filename: str) -> str:
             except Exception:
                 pass
 
-    url = f"https://drive.google.com/uc?id={file_id}"
+    url = gdrive_direct_url(file_id)
 
-    # First attempt
-    try:
-        gdown.download(url, local_path, quiet=True, fuzzy=True)
-    except Exception as e:
-        raise RuntimeError(f"gdown failed downloading {filename}: {e}")
+    # Download with fuzzy=True (handles some GDrive patterns)
+    gdown.download(url, local_path, quiet=True, fuzzy=True)
+    _validate_download(local_path)
+    return local_path
 
-    # Validate, if failed retry once with redownload
-    try:
-        _validate_downloaded_file(local_path)
-        return local_path
-    except Exception:
-        # Retry
-        try:
-            if os.path.exists(local_path):
-                os.remove(local_path)
-        except Exception:
-            pass
-
-        try:
-            gdown.download(url, local_path, quiet=True, fuzzy=True)
-        except Exception as e:
-            raise RuntimeError(f"gdown retry failed downloading {filename}: {e}")
-
-        _validate_downloaded_file(local_path)
-        return local_path
-
-def _try_load_model_robust(local_path: str):
+def _try_load_model(local_path: str):
     """
-    Load Keras 3 .keras models reliably on Streamlit Cloud.
+    Robust-ish loader:
+    - Try Keras 3 native loader first
+    - Fallback tf.keras loader
     """
-    # First: Keras 3 loader (this matches `batch_shape` config)
+    # 1) Keras 3 loader
     try:
         return keras.saving.load_model(local_path, compile=False)
-    except Exception:
-        pass
-
-    # Fallback: tf.keras (sometimes works if env is correct)
-    try:
-        return tf.keras.models.load_model(local_path, compile=False)
-    except Exception as e:
-        raise RuntimeError(f"Model load failed: {e}")
-
+    except Exception as e1:
+        # 2) tf.keras loader
+        try:
+            return tf.keras.models.load_model(local_path, compile=False)
+        except Exception as e2:
+            raise RuntimeError(
+                "Model load failed.\n\n"
+                f"File: {local_path}\n\n"
+                f"Keras loader error: {e1}\n\n"
+                f"TF loader error: {e2}\n\n"
+                "If you see an error like:\n"
+                "  'dense expects 1 input but got 2'\n"
+                "then the model archive is not compatible in this environment.\n\n"
+                "✅ Fix WITHOUT retraining:\n"
+                "1) Open Colab\n"
+                "2) Load model there\n"
+                "3) Re-save/export to .h5\n"
+                "4) Upload .h5 to Drive and update IDs in app.py\n"
+            )
 
 @st.cache_resource(show_spinner=False)
 def load_single_model(model_name: str):
-    if model_name == "DenseNet121":
-        file_id, fname = DENSENET_ID, "bt1_model_a_densenet_best.keras"
-    elif model_name == "MobileNetV1":
-        file_id, fname = MOBILENET_ID, "bt1_model_b_mobilenet_best.keras"
-    elif model_name == "ResNet50V2":
-        file_id, fname = RESNET_ID, "bt1_model_c_resnet_best.keras"
-    else:
-        raise ValueError(f"Unknown model_name: {model_name}")
-
-    local_path = _download_model_if_needed(file_id, fname)
-
-    try:
-        model = _try_load_model_robust(local_path)
-    except Exception as e:
-        raise RuntimeError(
-            "Model load failed even after download validation.\n"
-            "Most likely the uploaded file is not a real .keras model archive.\n\n"
-            f"Local path: {local_path}\n"
-            f"Error: {e}\n\n"
-            "Fix checklist:\n"
-            "1) Ensure the Drive file is shared: Anyone with link (Viewer)\n"
-            "2) Ensure the file is a real Keras SavedModel archive (.keras) created by model.save('x.keras')\n"
-            "3) Re-upload the model if needed."
-        )
-
+    fname, file_id = MODEL_FILES[model_name]
+    local_path = _download_if_needed(file_id, fname)
+    model = _try_load_model(local_path)
     return model
 
 @st.cache_resource(show_spinner=False)
-def load_all_base_models():
-    dn = load_single_model("DenseNet121")
-    mb = load_single_model("MobileNetV1")
-    rn = load_single_model("ResNet50V2")
-    return {"DenseNet121": dn, "MobileNetV1": mb, "ResNet50V2": rn}
+def load_all_models():
+    return {
+        "DenseNet121": load_single_model("DenseNet121"),
+        "MobileNetV1": load_single_model("MobileNetV1"),
+        "ResNet50V2":  load_single_model("ResNet50V2"),
+    }
 
-# ------------------------------------------------------------
-# 3) IMAGE HELPERS
-# ------------------------------------------------------------
+# ----------------------------
+# 2) IMAGE HELPERS
+# ----------------------------
 def load_image_from_file(file_or_path, img_size=IMG_SIZE):
     if isinstance(file_or_path, str):
         img = Image.open(file_or_path).convert("RGB")
     else:
         img = Image.open(file_or_path).convert("RGB")
-
     img_resized = img.resize(img_size)
     arr = np.asarray(img_resized).astype("float32") / 255.0
     batch = np.expand_dims(arr, axis=0)
     return img, batch
 
-
-# ------------------------------------------------------------
-# 4) YOUR FINALIZED Grad-CAM HELPERS (Keras-safe)
-# ------------------------------------------------------------
+# ----------------------------
+# 3) GRAD-CAM HELPERS (Your approach)
+# ----------------------------
 def make_brain_mask_from_image(orig_pil):
     img = np.array(orig_pil.convert("L"))
     img = cv2.GaussianBlur(img, (5, 5), 0)
@@ -249,7 +196,6 @@ def make_brain_mask_from_image(orig_pil):
     mask = cv2.GaussianBlur(mask, (9, 9), 0)
     mask = mask / (mask.max() + 1e-8)
     return mask.astype(np.float32)
-
 
 def enhance_heatmap(heatmap, brain_mask=None, gamma=1.8, keep_percentile=85, keep_largest_blob=True):
     h = heatmap.astype(np.float32)
@@ -277,7 +223,6 @@ def enhance_heatmap(heatmap, brain_mask=None, gamma=1.8, keep_percentile=85, kee
     h = h / (h.max() + 1e-8)
     return h
 
-
 def overlay_gradcam_on_image_fixed(heatmap, orig_image, alpha=0.45):
     w, h = orig_image.size
     heatmap_resized = cv2.resize(heatmap, (w, h))
@@ -291,15 +236,14 @@ def overlay_gradcam_on_image_fixed(heatmap, orig_image, alpha=0.45):
     overlay = np.clip(overlay, 0.0, 1.0)
     return overlay
 
-
 def get_backbone(seq_model):
-    # Sequential([backbone, head...])
+    # expects Sequential([backbone, head...])
     if hasattr(seq_model, "layers") and len(seq_model.layers) >= 2:
         return seq_model.layers[0]
     return None
 
-
 def pick_rank4_feature_layer(backbone, input_shape=(224, 224, 3)):
+    # Build backbone graph once
     x = tf.keras.Input(shape=input_shape)
     _ = backbone(x, training=False)
 
@@ -318,15 +262,14 @@ def pick_rank4_feature_layer(backbone, input_shape=(224, 224, 3)):
             pass
 
     if not candidates:
-        raise ValueError("No rank-4 feature layer found in backbone.")
+        raise ValueError("No rank-4 feature layer found in backbone (no HxWxC feature map).")
     candidates.sort(key=lambda x: (x[0], x[1]))
     return candidates[-1][2]
-
 
 def gradcam_hooked(seq_model, img_batch, class_index=None):
     backbone = get_backbone(seq_model)
     if backbone is None:
-        raise ValueError("Model does not look like Sequential([backbone, head...]).")
+        raise ValueError("Model is not Sequential([backbone, head...]). Cannot run this Grad-CAM method.")
 
     feat_layer_name = pick_rank4_feature_layer(backbone, input_shape=(IMG_SIZE[0], IMG_SIZE[1], 3))
     target_layer = backbone.get_layer(feat_layer_name)
@@ -339,6 +282,7 @@ def gradcam_hooked(seq_model, img_batch, class_index=None):
         conv_out["val"] = out
         return out
 
+    # Temporarily wrap layer call to capture activations
     target_layer.call = wrapped_call
 
     x = tf.convert_to_tensor(img_batch, dtype=tf.float32)
@@ -348,16 +292,23 @@ def gradcam_hooked(seq_model, img_batch, class_index=None):
         if class_index is None:
             class_index = int(tf.argmax(preds[0]))
         loss = preds[:, class_index]
+
+        # Ensure tape watches conv output
+        if conv_out["val"] is None:
+            # forward might not have hit layer (rare)
+            _ = seq_model(x, training=False)
         tape.watch(conv_out["val"])
 
     grads = tape.gradient(loss, conv_out["val"])
+
+    # Restore original call
     target_layer.call = original_call
 
     if conv_out["val"] is None or grads is None:
-        raise RuntimeError("Failed to capture feature map / gradients for Grad-CAM.")
+        raise RuntimeError("Failed to capture feature map/gradients for Grad-CAM.")
 
-    pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
-    conv_map = conv_out["val"][0]
+    pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))  # (C,)
+    conv_map = conv_out["val"][0]                         # (H,W,C)
 
     heatmap = tf.reduce_sum(conv_map * pooled_grads, axis=-1)
     heatmap = tf.maximum(heatmap, 0)
@@ -365,13 +316,11 @@ def gradcam_hooked(seq_model, img_batch, class_index=None):
 
     return heatmap.numpy(), feat_layer_name
 
-
-# ------------------------------------------------------------
-# 5) FHD ENSEMBLE HELPERS
-# ------------------------------------------------------------
+# ----------------------------
+# 4) FHD ENSEMBLE HELPERS
+# ----------------------------
 def fuzzy_hellinger_distance(p1, p2):
     return 0.5 * np.sum((np.sqrt(p1) - np.sqrt(p2)) ** 2)
-
 
 def ensemble_predict_fhd_single(models_dict, img_batch):
     keys = ["DenseNet121", "MobileNetV1", "ResNet50V2"]
@@ -392,17 +341,15 @@ def ensemble_predict_fhd_single(models_dict, img_batch):
     pred_idx = int(np.argmax(chosen_probs))
     return chosen_probs, pred_idx, chosen_key
 
-
 def run_fhd_ensemble(img_batch):
-    models_dict = load_all_base_models()
+    models_dict = load_all_models()
     probs, pred_idx, chosen_key = ensemble_predict_fhd_single(models_dict, img_batch)
     grad_model = models_dict[chosen_key]
     return probs, pred_idx, chosen_key, grad_model
 
-
-# ------------------------------------------------------------
-# 6) SIDEBAR CONTROLS
-# ------------------------------------------------------------
+# ----------------------------
+# 5) SIDEBAR UI
+# ----------------------------
 st.sidebar.title("Controls")
 
 model_name = st.sidebar.selectbox(
@@ -411,36 +358,30 @@ model_name = st.sidebar.selectbox(
     index=3
 )
 
-source = st.sidebar.radio(
-    "Choose image source",
-    ["Upload MRI", "Sample gallery"],
-    index=1
-)
+source = st.sidebar.radio("Choose image source", ["Upload MRI", "Sample gallery"], index=1)
 
 chosen_file = None
-
 if source == "Upload MRI":
-    uploaded = st.sidebar.file_uploader(
-        "Upload a brain MRI image",
-        type=["png", "jpg", "jpeg", "webp"]
-    )
+    uploaded = st.sidebar.file_uploader("Upload an MRI image", type=["png", "jpg", "jpeg", "webp"])
     if uploaded is not None:
         chosen_file = uploaded
 else:
-    gallery_files = sorted(
-        [f for f in os.listdir(SAMPLE_DIR) if f.lower().endswith((".png", ".jpg", ".jpeg", ".webp"))]
-    )
+    if os.path.isdir(SAMPLE_DIR):
+        gallery_files = sorted([f for f in os.listdir(SAMPLE_DIR) if f.lower().endswith((".png", ".jpg", ".jpeg", ".webp"))])
+    else:
+        gallery_files = []
+
     if gallery_files:
         sample_name = st.sidebar.selectbox("Pick a sample image", gallery_files)
         chosen_file = os.path.join(SAMPLE_DIR, sample_name)
     else:
-        st.sidebar.warning("No images found in sample_images/ (add images to repo).")
+        st.sidebar.warning("No images found in sample_images/. Commit some images into repo.")
 
 run_button = st.sidebar.button("▶ Run prediction")
 
-# ------------------------------------------------------------
-# 7) MAIN HEADER
-# ------------------------------------------------------------
+# ----------------------------
+# 6) MAIN HEADER
+# ----------------------------
 st.title("FHD-HybridNet Brain Tumor MRI Classification")
 st.markdown(
     """
@@ -453,15 +394,8 @@ to classify Brain Tumor MRI scans into **four classes**.
 col_info, _ = st.columns([1, 1])
 with col_info:
     st.info("👈 Select a model & image, then click **Run prediction**.")
-    st.subheader("Selected options")
     st.write(f"**Model:** {model_name}")
     st.write(f"**Source:** {source}")
-    if isinstance(chosen_file, str):
-        st.write(f"**Image path:** `{chosen_file}`")
-    elif chosen_file is None:
-        st.write("_No image selected yet._")
-    else:
-        st.write(f"**Uploaded file:** `{chosen_file.name}`")
 
 if not run_button:
     st.stop()
@@ -470,33 +404,62 @@ if chosen_file is None:
     st.error("Please upload or select an image first.")
     st.stop()
 
-# ------------------------------------------------------------
-# 8) RUN INFERENCE
-# ------------------------------------------------------------
+# ----------------------------
+# 7) RUN INFERENCE
+# ----------------------------
 orig_img, batch = load_image_from_file(chosen_file, IMG_SIZE)
 
-with st.spinner("Running prediction…"):
-    if model_name == "FHD-HybridNet":
-        probs, pred_idx, chosen_key, grad_model = run_fhd_ensemble(batch)
-        cam_title = f"FHD-HybridNet (chosen: {chosen_key})"
-    else:
-        model = load_single_model(model_name)
-        probs = model.predict(batch, verbose=0)[0]
-        pred_idx = int(np.argmax(probs))
-        grad_model = model
-        cam_title = model_name
+try:
+    with st.spinner("Running prediction…"):
+        if model_name == "FHD-HybridNet":
+            probs, pred_idx, chosen_key, grad_model = run_fhd_ensemble(batch)
+            cam_title = f"FHD-HybridNet (chosen: {chosen_key})"
+        else:
+            model = load_single_model(model_name)
+            probs = model.predict(batch, verbose=0)[0]
+            pred_idx = int(np.argmax(probs))
+            grad_model = model
+            cam_title = model_name
 
-pred_class = CLASS_NAMES[pred_idx]
+    pred_class = CLASS_NAMES[pred_idx]
 
-with st.spinner("Computing Grad-CAM…"):
-    heatmap, feat_layer_name = gradcam_hooked(grad_model, batch, class_index=pred_idx)
-    brain_mask = make_brain_mask_from_image(orig_img)
-    heatmap2 = enhance_heatmap(heatmap, brain_mask=brain_mask, gamma=1.8, keep_percentile=85, keep_largest_blob=True)
-    overlay = overlay_gradcam_on_image_fixed(heatmap2, orig_img, alpha=0.45)
+    with st.spinner("Computing Grad-CAM…"):
+        heatmap, feat_layer_name = gradcam_hooked(grad_model, batch, class_index=pred_idx)
+        brain_mask = make_brain_mask_from_image(orig_img)
+        heatmap2 = enhance_heatmap(
+            heatmap,
+            brain_mask=brain_mask,
+            gamma=1.8,
+            keep_percentile=85,
+            keep_largest_blob=True
+        )
+        overlay = overlay_gradcam_on_image_fixed(heatmap2, orig_img, alpha=0.45)
 
-# ------------------------------------------------------------
-# 9) OUTPUT
-# ------------------------------------------------------------
+except Exception as e:
+    st.error("❌ Inference failed.")
+    st.code(str(e))
+    st.markdown(
+        """
+**If your error contains:**
+- `dense expects 1 input but got 2`
+
+Then your `.keras` model is not loading cleanly on Streamlit Cloud.  
+✅ Fix WITHOUT retraining:
+
+1) Open Colab  
+2) Load your `.keras` model  
+3) Re-save to `.h5`  
+4) Upload `.h5` to Drive  
+5) Update IDs in `app.py`  
+
+If you want, paste your Colab conversion output links and I will update the IDs for `.h5` exactly.
+"""
+    )
+    st.stop()
+
+# ----------------------------
+# 8) OUTPUT
+# ----------------------------
 st.markdown("---")
 st.subheader("Prediction Output")
 
