@@ -1,23 +1,16 @@
 # app.py — FHD-HybridNet Brain Tumor MRI (Streamlit, GitHub-ready)
 # - Uses sample_images/ from repo (you will commit images manually)
-# - Downloads 3 models from Google Drive (gdown)
-# - Runs single model or FHD-HybridNet ensemble
-# - Grad-CAM (hook-based for Sequential([backbone, head...])) + brain mask + heatmap enhancement
-#
-# IMPORTANT:
-# - Streamlit Cloud should use Python 3.10/3.11 for TensorFlow stability.
-# - Keep TF_USE_LEGACY_KERAS = 0 (Keras 3)
-#
-# If you get: "dense expects 1 input but got 2"
-# -> Your saved .keras is not loading cleanly in this environment.
-# -> Fix without retrain: load in Colab then export to .h5, upload to Drive, update IDs.
+# - Downloads 3 models (.h5) from Google Drive (gdown)
+# - Runs single model or FHD-HybridNet (Fuzzy Hellinger Distance) ensemble
+# - Grad-CAM:
+#     (A) Hook-based for Sequential([backbone, head...])  [your Colab style]
+#     (B) Robust fallback Grad-CAM for Functional/other models
+# - Brain mask + heatmap enhancement (your post-processing)
 
 import os
-os.environ["TF_USE_LEGACY_KERAS"] = "0"
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"   # quieter TF logs
 
 import io
-import time
 import numpy as np
 from PIL import Image
 import streamlit as st
@@ -25,7 +18,6 @@ import matplotlib.pyplot as plt
 import cv2
 import gdown
 import tensorflow as tf
-import keras  # Keras 3 (works with TF 2.16+)
 
 # ----------------------------
 # 0) BASIC SETUP
@@ -34,8 +26,7 @@ st.set_page_config(page_title="FHD-HybridNet Brain Tumor MRI", layout="wide")
 
 IMG_SIZE = (224, 224)
 
-# ⚠️ Must match training class order.
-# If your training generator had different order, update it accordingly.
+# ⚠️ Must match training class order
 CLASS_NAMES = ["glioma", "meningioma", "notumor", "pituitary"]
 
 SAMPLE_DIR = "sample_images"
@@ -43,22 +34,35 @@ MODEL_CACHE_DIR = "models_cache"
 os.makedirs(MODEL_CACHE_DIR, exist_ok=True)
 
 # ----------------------------
-# 1) GOOGLE DRIVE LINKS (IDs)
+# 1) GOOGLE DRIVE LINKS (H5)
 # ----------------------------
-# Your links:
-# model a : https://drive.google.com/file/d/1U7KwBmM7syLrU_F1aK0XThiMbAdHmfLC/view?usp=drive_link
-# model b : https://drive.google.com/file/d/1c5A7PQf7WF1ZiJFlHM3s6oFusQRvHjR0/view?usp=drive_link
-# model c : https://drive.google.com/file/d/1LJEBxqHg_t9dQp1g6BykXGBIc1e7xZT0/view?usp=drive_link
-
-DENSENET_ID  = "1U7KwBmM7syLrU_F1aK0XThiMbAdHmfLC"
-MOBILENET_ID = "1c5A7PQf7WF1ZiJFlHM3s6oFusQRvHjR0"
-RESNET_ID    = "1LJEBxqHg_t9dQp1g6BykXGBIc1e7xZT0"
+# Paste your NEW .h5 links here (either full link OR file id works)
+# Example full link: https://drive.google.com/file/d/<FILE_ID>/view?usp=sharing
+MODEL_H5_LINKS = {
+    "DenseNet121": "1U7KwBmM7syLrU_F1aK0XThiMbAdHmfLC",
+    "MobileNetV1": "1c5A7PQf7WF1ZiJFlHM3s6oFusQRvHjR0",
+    "ResNet50V2":  "1LJEBxqHg_t9dQp1g6BykXGBIc1e7xZT0",
+}
 
 MODEL_FILES = {
-    "DenseNet121": ("bt_model_a.keras", DENSENET_ID),
-    "MobileNetV1": ("bt_model_b.keras", MOBILENET_ID),
-    "ResNet50V2":  ("bt_model_c.keras", RESNET_ID),
+    "DenseNet121": "bt_model_a.h5",
+    "MobileNetV1": "bt_model_b.h5",
+    "ResNet50V2":  "bt_model_c.h5",
 }
+
+def _extract_drive_id(link_or_id: str) -> str:
+    s = (link_or_id or "").strip()
+    if not s:
+        return ""
+    if "drive.google.com" in s:
+        # handle /file/d/<id>/
+        if "/file/d/" in s:
+            return s.split("/file/d/")[1].split("/")[0]
+        # handle ?id=<id>
+        if "id=" in s:
+            return s.split("id=")[1].split("&")[0]
+    # assume already an ID
+    return s
 
 def gdrive_direct_url(file_id: str) -> str:
     return f"https://drive.google.com/uc?id={file_id}"
@@ -82,11 +86,11 @@ def _validate_download(path: str):
                 "Downloaded file looks like an HTML page (Google Drive permission/confirm page), not a model.\n\n"
                 "Fix:\n"
                 "1) In Google Drive -> Share -> Anyone with the link (Viewer)\n"
-                "2) Use the correct file ID\n"
+                "2) Use the correct file link/ID\n"
                 f"\nBad file: {path} ({size} bytes)"
             )
         raise RuntimeError(
-            f"Downloaded file too small to be a valid model archive: {path} ({size} bytes).\n"
+            f"Downloaded file too small to be a valid model: {path} ({size} bytes).\n"
             "Fix: re-upload model, ensure link is public."
         )
 
@@ -96,7 +100,11 @@ def _validate_download(path: str):
             "Fix: Make the file public: Anyone with the link (Viewer)."
         )
 
-def _download_if_needed(file_id: str, filename: str) -> str:
+def _download_if_needed(link_or_id: str, filename: str) -> str:
+    file_id = _extract_drive_id(link_or_id)
+    if not file_id:
+        raise RuntimeError(f"Missing Drive link/ID for model file: {filename}")
+
     local_path = os.path.join(MODEL_CACHE_DIR, filename)
 
     # If exists, validate. If invalid remove and redownload.
@@ -117,41 +125,27 @@ def _download_if_needed(file_id: str, filename: str) -> str:
     _validate_download(local_path)
     return local_path
 
-def _try_load_model(local_path: str):
-    """
-    Robust-ish loader:
-    - Try Keras 3 native loader first
-    - Fallback tf.keras loader
-    """
-    # 1) Keras 3 loader
+def _try_load_model_h5(local_path: str):
+    # H5 loads most reliably with tf.keras
     try:
-        return keras.saving.load_model(local_path, compile=False)
-    except Exception as e1:
-        # 2) tf.keras loader
-        try:
-            return tf.keras.models.load_model(local_path, compile=False)
-        except Exception as e2:
-            raise RuntimeError(
-                "Model load failed.\n\n"
-                f"File: {local_path}\n\n"
-                f"Keras loader error: {e1}\n\n"
-                f"TF loader error: {e2}\n\n"
-                "If you see an error like:\n"
-                "  'dense expects 1 input but got 2'\n"
-                "then the model archive is not compatible in this environment.\n\n"
-                "✅ Fix WITHOUT retraining:\n"
-                "1) Open Colab\n"
-                "2) Load model there\n"
-                "3) Re-save/export to .h5\n"
-                "4) Upload .h5 to Drive and update IDs in app.py\n"
-            )
+        return tf.keras.models.load_model(local_path, compile=False)
+    except Exception as e:
+        raise RuntimeError(
+            "Model load failed.\n\n"
+            f"File: {local_path}\n"
+            f"Error: {e}\n\n"
+            "Fix checklist:\n"
+            "1) Ensure you converted .keras -> .h5 correctly in Colab\n"
+            "2) Ensure Drive file is public (Anyone with link)\n"
+            "3) Ensure the link/ID is correct\n"
+        )
 
 @st.cache_resource(show_spinner=False)
 def load_single_model(model_name: str):
-    fname, file_id = MODEL_FILES[model_name]
-    local_path = _download_if_needed(file_id, fname)
-    model = _try_load_model(local_path)
-    return model
+    link_or_id = MODEL_H5_LINKS[model_name]
+    fname = MODEL_FILES[model_name]
+    local_path = _download_if_needed(link_or_id, fname)
+    return _try_load_model_h5(local_path)
 
 @st.cache_resource(show_spinner=False)
 def load_all_models():
@@ -175,7 +169,7 @@ def load_image_from_file(file_or_path, img_size=IMG_SIZE):
     return img, batch
 
 # ----------------------------
-# 3) GRAD-CAM HELPERS (Your approach)
+# 3) GRAD-CAM HELPERS (your post-processing)
 # ----------------------------
 def make_brain_mask_from_image(orig_pil):
     img = np.array(orig_pil.convert("L"))
@@ -236,14 +230,13 @@ def overlay_gradcam_on_image_fixed(heatmap, orig_image, alpha=0.45):
     overlay = np.clip(overlay, 0.0, 1.0)
     return overlay
 
+# ---------- Grad-CAM A: Hook-based (works for Sequential([backbone, head...])) ----------
 def get_backbone(seq_model):
-    # expects Sequential([backbone, head...])
     if hasattr(seq_model, "layers") and len(seq_model.layers) >= 2:
         return seq_model.layers[0]
     return None
 
 def pick_rank4_feature_layer(backbone, input_shape=(224, 224, 3)):
-    # Build backbone graph once
     x = tf.keras.Input(shape=input_shape)
     _ = backbone(x, training=False)
 
@@ -262,14 +255,14 @@ def pick_rank4_feature_layer(backbone, input_shape=(224, 224, 3)):
             pass
 
     if not candidates:
-        raise ValueError("No rank-4 feature layer found in backbone (no HxWxC feature map).")
+        raise ValueError("No rank-4 feature layer found in backbone.")
     candidates.sort(key=lambda x: (x[0], x[1]))
     return candidates[-1][2]
 
 def gradcam_hooked(seq_model, img_batch, class_index=None):
     backbone = get_backbone(seq_model)
     if backbone is None:
-        raise ValueError("Model is not Sequential([backbone, head...]). Cannot run this Grad-CAM method.")
+        raise ValueError("Not Sequential([backbone, head...]).")
 
     feat_layer_name = pick_rank4_feature_layer(backbone, input_shape=(IMG_SIZE[0], IMG_SIZE[1], 3))
     target_layer = backbone.get_layer(feat_layer_name)
@@ -282,39 +275,77 @@ def gradcam_hooked(seq_model, img_batch, class_index=None):
         conv_out["val"] = out
         return out
 
-    # Temporarily wrap layer call to capture activations
     target_layer.call = wrapped_call
 
     x = tf.convert_to_tensor(img_batch, dtype=tf.float32)
-
     with tf.GradientTape() as tape:
         preds = seq_model(x, training=False)
         if class_index is None:
             class_index = int(tf.argmax(preds[0]))
         loss = preds[:, class_index]
-
-        # Ensure tape watches conv output
         if conv_out["val"] is None:
-            # forward might not have hit layer (rare)
             _ = seq_model(x, training=False)
         tape.watch(conv_out["val"])
 
     grads = tape.gradient(loss, conv_out["val"])
-
-    # Restore original call
     target_layer.call = original_call
 
     if conv_out["val"] is None or grads is None:
-        raise RuntimeError("Failed to capture feature map/gradients for Grad-CAM.")
+        raise RuntimeError("Failed to capture feature map/gradients.")
 
-    pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))  # (C,)
-    conv_map = conv_out["val"][0]                         # (H,W,C)
+    pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
+    conv_map = conv_out["val"][0]
 
     heatmap = tf.reduce_sum(conv_map * pooled_grads, axis=-1)
     heatmap = tf.maximum(heatmap, 0)
     heatmap = heatmap / (tf.reduce_max(heatmap) + 1e-8)
-
     return heatmap.numpy(), feat_layer_name
+
+# ---------- Grad-CAM B: Robust fallback (Functional models etc.) ----------
+def _find_last_rank4_layer(model):
+    # Prefer Conv-like or any rank-4 layer
+    for layer in reversed(model.layers):
+        try:
+            out = layer.output
+            if out is None:
+                continue
+            if len(out.shape) == 4:
+                return layer.name
+        except Exception:
+            continue
+    raise ValueError("No rank-4 layer found for Grad-CAM fallback.")
+
+def gradcam_fallback(model, img_batch, class_index=None):
+    # Build grad model from a rank-4 layer
+    layer_name = _find_last_rank4_layer(model)
+    target = model.get_layer(layer_name)
+
+    grad_model = tf.keras.models.Model(model.inputs, [target.output, model.output])
+
+    x = tf.convert_to_tensor(img_batch, dtype=tf.float32)
+    with tf.GradientTape() as tape:
+        conv_out, preds = grad_model(x, training=False)
+        if isinstance(preds, (list, tuple)):
+            preds = preds[0]
+        if class_index is None:
+            class_index = int(tf.argmax(preds[0]))
+        loss = preds[:, class_index]
+
+    grads = tape.gradient(loss, conv_out)
+    pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
+    conv_map = conv_out[0]
+
+    heatmap = tf.reduce_sum(conv_map * pooled_grads, axis=-1)
+    heatmap = tf.maximum(heatmap, 0)
+    heatmap = heatmap / (tf.reduce_max(heatmap) + 1e-8)
+    return heatmap.numpy(), layer_name
+
+def gradcam_any(model, img_batch, class_index=None):
+    # Try hooked first; if not Sequential, fallback
+    try:
+        return gradcam_hooked(model, img_batch, class_index=class_index)
+    except Exception:
+        return gradcam_fallback(model, img_batch, class_index=class_index)
 
 # ----------------------------
 # 4) FHD ENSEMBLE HELPERS
@@ -424,7 +455,7 @@ try:
     pred_class = CLASS_NAMES[pred_idx]
 
     with st.spinner("Computing Grad-CAM…"):
-        heatmap, feat_layer_name = gradcam_hooked(grad_model, batch, class_index=pred_idx)
+        heatmap, feat_layer_name = gradcam_any(grad_model, batch, class_index=pred_idx)
         brain_mask = make_brain_mask_from_image(orig_img)
         heatmap2 = enhance_heatmap(
             heatmap,
@@ -438,23 +469,6 @@ try:
 except Exception as e:
     st.error("❌ Inference failed.")
     st.code(str(e))
-    st.markdown(
-        """
-**If your error contains:**
-- `dense expects 1 input but got 2`
-
-Then your `.keras` model is not loading cleanly on Streamlit Cloud.  
-✅ Fix WITHOUT retraining:
-
-1) Open Colab  
-2) Load your `.keras` model  
-3) Re-save to `.h5`  
-4) Upload `.h5` to Drive  
-5) Update IDs in `app.py`  
-
-If you want, paste your Colab conversion output links and I will update the IDs for `.h5` exactly.
-"""
-    )
     st.stop()
 
 # ----------------------------
