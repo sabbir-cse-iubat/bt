@@ -1,11 +1,13 @@
-# app.py — Brain Tumor (MRI) FHD-HybridNet Streamlit App (GitHub-ready)
-# - Uses 3 base Keras models (.keras) downloaded from Google Drive via gdown
-# - Supports single model inference + FHD-HybridNet ensemble
-# - Uses your FINALIZED Grad-CAM style (hook-based, + brain-mask + heatmap enhance)
-# - No dataset download needed for the app (only sample_images folder optional)
+# app.py — FHD-HybridNet Brain Tumor MRI Classification (Streamlit + GitHub-ready)
+# - Auto-downloads sample_images.zip from Google Drive and extracts to ./sample_images/
+# - Auto-downloads 3 best_model.keras from Google Drive using gdown and caches them in ./models_cache/
+# - Supports DenseNet121 / MobileNetV1 / ResNet50V2 / FHD-HybridNet (Fuzzy Hellinger Distance)
+# - Uses your finalized Keras-safe hook-based Grad-CAM + brain mask + heatmap enhancement
+# ------------------------------------------------------------
 
 import os
 import io
+import zipfile
 import numpy as np
 from PIL import Image
 import streamlit as st
@@ -13,6 +15,7 @@ import tensorflow as tf
 import matplotlib.pyplot as plt
 import gdown
 import cv2
+import datetime
 
 # ------------------------------------------------------------
 # 0) BASIC SETUP
@@ -22,25 +25,25 @@ st.set_page_config(
     layout="wide"
 )
 
-SAMPLE_DIR = "sample_images"
-os.makedirs(SAMPLE_DIR, exist_ok=True)
-
 IMG_SIZE = (224, 224)
 
-# ✅ Brain Tumor MRI dataset class folders are typically:
-# glioma, meningioma, notumor, pituitary
+# ✅ Update if your folder class order differs
 CLASS_NAMES = ["glioma", "meningioma", "notumor", "pituitary"]
+
+SAMPLE_DIR = "sample_images"
+os.makedirs(SAMPLE_DIR, exist_ok=True)
 
 MODEL_CACHE_DIR = "models_cache"
 os.makedirs(MODEL_CACHE_DIR, exist_ok=True)
 
 # ------------------------------------------------------------
-# 1) GOOGLE DRIVE MODEL LINKS (REPLACE WITH YOUR FILE IDs)
+# 1) GOOGLE DRIVE LINKS (PROVIDED BY YOU)
 # ------------------------------------------------------------
-# Put your bt1 project best_model.keras files in Drive and set IDs here.
-DENSENET_ID  = "PUT_YOUR_DENSENET_FILE_ID"
-MOBILENET_ID = "PUT_YOUR_MOBILENET_FILE_ID"
-RESNET_ID    = "PUT_YOUR_RESNET_FILE_ID"
+SAMPLE_ZIP_ID = "1biS47O2whlyhtJ_gDpxVgrIPCmLMaP1o"
+
+DENSENET_ID  = "1IVbNJA_TKFsT9ZftiWyihxp6CYSoJxwd"  # model_a best_model.keras
+MOBILENET_ID = "1MOXJSc3GuHoq4T7ZIPKNqyDF3r33_pml"  # model_b best_model.keras
+RESNET_ID    = "1zgfjc0JTIe1Xg24rcWTT7zym9FL2MObF"  # model_c best_model.keras
 
 
 def gdrive_direct_url(file_id: str) -> str:
@@ -48,20 +51,56 @@ def gdrive_direct_url(file_id: str) -> str:
 
 
 # ------------------------------------------------------------
-# 2) MODEL LOADING VIA GDOWN (quiet)
+# 2) SAMPLE IMAGES AUTO-DOWNLOAD + UNZIP
+# ------------------------------------------------------------
+def ensure_sample_images():
+    """
+    Ensures ./sample_images has images.
+    Downloads sample_images.zip from Drive once and extracts into repo root.
+    """
+    # if folder already has images, do nothing
+    has_imgs = any(
+        fn.lower().endswith((".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"))
+        for fn in os.listdir(SAMPLE_DIR)
+    )
+    if has_imgs:
+        return
+
+    zip_path = os.path.join(".", "sample_images.zip")
+    url = gdrive_direct_url(SAMPLE_ZIP_ID)
+
+    with st.spinner("Downloading sample images…"):
+        gdown.download(url, zip_path, quiet=True)
+
+    if not os.path.exists(zip_path):
+        st.warning("Could not download sample images zip. Please use Upload MRI instead.")
+        return
+
+    with st.spinner("Extracting sample images…"):
+        with zipfile.ZipFile(zip_path, "r") as z:
+            z.extractall(".")
+
+    try:
+        os.remove(zip_path)
+    except Exception:
+        pass
+
+
+# ------------------------------------------------------------
+# 3) MODEL LOADING VIA GDOWN (quiet)
 # ------------------------------------------------------------
 def _download_model_if_needed(file_id: str, filename: str) -> str:
+    """
+    Downloads a model into ./models_cache/ if not already present.
+    """
     local_path = os.path.join(MODEL_CACHE_DIR, filename)
 
     if not os.path.exists(local_path):
-        if file_id.startswith("PUT_YOUR_"):
-            st.error("Google Drive file IDs are not set in app.py. Please update DENSENET_ID/MOBILENET_ID/RESNET_ID.")
-            raise ValueError("Drive IDs not set.")
         url = gdrive_direct_url(file_id)
         try:
             gdown.download(url, local_path, quiet=True)
         except Exception as e:
-            st.error(f"Failed to download {filename} from Google Drive.\nError: {e}")
+            st.error(f"Failed to download {filename}.\nError: {e}")
             raise
 
     if not os.path.exists(local_path):
@@ -78,13 +117,13 @@ def load_single_model(model_name: str):
     """
     if model_name == "DenseNet121":
         file_id = DENSENET_ID
-        fname = "bt_densenet_best.keras"
+        fname = "bt1_model_a_densenet_best.keras"
     elif model_name == "MobileNetV1":
         file_id = MOBILENET_ID
-        fname = "bt_mobilenet_best.keras"
+        fname = "bt1_model_b_mobilenet_best.keras"
     elif model_name == "ResNet50V2":
         file_id = RESNET_ID
-        fname = "bt_resnet_best.keras"
+        fname = "bt1_model_c_resnet_best.keras"
     else:
         raise ValueError(f"Unknown model_name: {model_name}")
 
@@ -93,10 +132,7 @@ def load_single_model(model_name: str):
     try:
         model = tf.keras.models.load_model(local_path, compile=False)
     except Exception as e:
-        st.error(
-            f"Failed to load model from {local_path}.\n"
-            f"Error: {e}"
-        )
+        st.error(f"Failed to load model from {local_path}.\nError: {e}")
         raise
 
     return model
@@ -104,9 +140,6 @@ def load_single_model(model_name: str):
 
 @st.cache_resource(show_spinner=False)
 def load_all_base_models():
-    """
-    Load all 3 base models once for FHD-HybridNet
-    """
     dn = load_single_model("DenseNet121")
     mb = load_single_model("MobileNetV1")
     rn = load_single_model("ResNet50V2")
@@ -114,7 +147,7 @@ def load_all_base_models():
 
 
 # ------------------------------------------------------------
-# 3) IMAGE HELPERS
+# 4) IMAGE HELPERS
 # ------------------------------------------------------------
 def load_image_from_file(file_or_path, img_size=IMG_SIZE):
     if isinstance(file_or_path, str):
@@ -129,7 +162,7 @@ def load_image_from_file(file_or_path, img_size=IMG_SIZE):
 
 
 # ------------------------------------------------------------
-# 4) YOUR FINALIZED Grad-CAM HELPERS (hook-based + enhance)
+# 5) YOUR FINALIZED Grad-CAM HELPERS (hook-based + enhance)
 # ------------------------------------------------------------
 def make_brain_mask_from_image(orig_pil):
     img = np.array(orig_pil.convert("L"))
@@ -195,7 +228,7 @@ def overlay_gradcam_on_image_fixed(heatmap, orig_image, alpha=0.45):
 
 
 def get_backbone(seq_model):
-    # expects Sequential([backbone, head...])
+    # Sequential([backbone, head...])
     if hasattr(seq_model, "layers") and len(seq_model.layers) >= 2:
         return seq_model.layers[0]
     return None
@@ -271,7 +304,7 @@ def gradcam_hooked(seq_model, img_batch, class_index=None):
 
 
 # ------------------------------------------------------------
-# 5) FHD ENSEMBLE HELPERS
+# 6) FHD ENSEMBLE HELPERS
 # ------------------------------------------------------------
 def fuzzy_hellinger_distance(p1, p2):
     return 0.5 * np.sum((np.sqrt(p1) - np.sqrt(p2)) ** 2)
@@ -309,7 +342,13 @@ def run_fhd_ensemble(img_batch):
 
 
 # ------------------------------------------------------------
-# 6) SIDEBAR CONTROLS
+# 7) STARTUP: ensure sample images exist
+# ------------------------------------------------------------
+ensure_sample_images()
+
+
+# ------------------------------------------------------------
+# 8) SIDEBAR CONTROLS
 # ------------------------------------------------------------
 st.sidebar.title("Controls")
 
@@ -330,14 +369,16 @@ chosen_file = None
 if source == "Upload MRI":
     uploaded = st.sidebar.file_uploader(
         "Upload a brain MRI image",
-        type=["png", "jpg", "jpeg"]
+        type=["png", "jpg", "jpeg", "webp"]
     )
     if uploaded is not None:
         chosen_file = uploaded
 else:
-    files_ = sorted([f for f in os.listdir(SAMPLE_DIR) if f.lower().endswith((".png", ".jpg", ".jpeg"))])
-    if files_:
-        sample_name = st.sidebar.selectbox("Pick a sample image", files_)
+    gallery_files = sorted(
+        [f for f in os.listdir(SAMPLE_DIR) if f.lower().endswith((".png", ".jpg", ".jpeg", ".webp"))]
+    )
+    if gallery_files:
+        sample_name = st.sidebar.selectbox("Pick a sample image", gallery_files)
         chosen_file = os.path.join(SAMPLE_DIR, sample_name)
     else:
         st.sidebar.warning("No images found in sample_images/")
@@ -345,7 +386,7 @@ else:
 run_button = st.sidebar.button("▶ Run prediction")
 
 # ------------------------------------------------------------
-# 7) MAIN AREA HEADER
+# 9) MAIN AREA HEADER
 # ------------------------------------------------------------
 st.title("FHD-HybridNet Brain Tumor MRI Classification")
 st.markdown(
@@ -378,7 +419,7 @@ if chosen_file is None:
     st.stop()
 
 # ------------------------------------------------------------
-# 8) LOAD IMAGE & RUN MODEL
+# 10) LOAD IMAGE & RUN MODEL
 # ------------------------------------------------------------
 orig_img, batch = load_image_from_file(chosen_file, IMG_SIZE)
 
@@ -399,13 +440,18 @@ pred_class = CLASS_NAMES[pred_idx]
 with st.spinner("Computing Grad-CAM…"):
     heatmap, feat_layer_name = gradcam_hooked(grad_model, batch, class_index=pred_idx)
 
-    # Apply your finalized enhancement
     brain_mask = make_brain_mask_from_image(orig_img)
-    heatmap2 = enhance_heatmap(heatmap, brain_mask=brain_mask, gamma=1.8, keep_percentile=85, keep_largest_blob=True)
+    heatmap2 = enhance_heatmap(
+        heatmap,
+        brain_mask=brain_mask,
+        gamma=1.8,
+        keep_percentile=85,
+        keep_largest_blob=True
+    )
     overlay = overlay_gradcam_on_image_fixed(heatmap2, orig_img, alpha=0.45)
 
 # ------------------------------------------------------------
-# 9) OUTPUT
+# 11) OUTPUT
 # ------------------------------------------------------------
 st.markdown("---")
 st.subheader("Prediction Output")
@@ -434,7 +480,7 @@ st.pyplot(fig)
 st.markdown(f"#### Final Prediction : *{pred_class}*")
 
 # ------------------------------------------------------------
-# 10) Download result image
+# 12) Download result image
 # ------------------------------------------------------------
 buf = io.BytesIO()
 fig.savefig(buf, format="png", bbox_inches="tight", dpi=150)
