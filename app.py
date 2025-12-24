@@ -389,10 +389,9 @@ orig_img, batch = load_image_from_file(chosen_file, IMG_SIZE)
 try:
     with st.spinner("Running prediction…"):
         if model_name == "FHD-HybridNet":
-            models_dict = load_all_models()
-            pred_idx, probs, chosen_key = ensemble_predict_fhd_single(models_dict, batch)
-            cam_model = models_dict[chosen_key]
-            cam_title = f"FHD-HybridNet (chosen: {chosen_key})"
+            probs, pred_idx, chosen_key, grad_model = run_fhd_ensemble(batch)
+            cam_title = "FHD-HybridNet"
+
         else:
             cam_model = load_single_model(model_name)
             probs = predict_probs(cam_model, batch)
