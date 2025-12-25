@@ -577,12 +577,7 @@ except Exception as e:
     st.code(str(e))
     st.stop()
 
-# ----------------------------
-# 9) OUTPUT (modern layout)
-# ----------------------------# ----------------------------
-# 9) OUTPUT
-# ----------------------------
-# Put title INSIDE the same white bar + remove big final prediction text
+
 # ----------------------------
 # 9) OUTPUT
 # ----------------------------
@@ -603,31 +598,46 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# 2) Visuals card
-st.markdown('<div class="card" style="margin-top: 1rem;">', unsafe_allow_html=True)
+# ----------------------------
+# VISUAL OUTPUT CARD (FIXED)
+# ----------------------------
+st.markdown('<div class="card" style="margin-top:1.25rem;">', unsafe_allow_html=True)
 
-fig, axes = plt.subplots(1, 3, figsize=(12.6, 4.25))
+fig, axes = plt.subplots(
+    1, 3,
+    figsize=(13, 4.6),
+    gridspec_kw={"width_ratios": [1, 1, 0.9]}
+)
 
+# ---- Original
 axes[0].imshow(orig_img)
-axes[0].set_title(f"Original\nPredicted: {pred_class}")
+axes[0].set_title("Original MRI\nPredicted: " + pred_class, fontsize=11)
 axes[0].axis("off")
 
+# ---- Grad-CAM
 axes[1].imshow(overlay)
-axes[1].set_title(f"Grad-CAM\n{cam_title}")
+axes[1].set_title("Grad-CAM\nFHD-HybridNet", fontsize=11)
 axes[1].axis("off")
 
-# ✅ Probabilities bar color set to #10bb82
+# ---- Probabilities
 axes[2].barh(CLASS_NAMES, probs, color="#10bb82")
 axes[2].set_xlim(0, 1)
-axes[2].set_xlabel("Probability")
-axes[2].set_title("Probabilities")
-for i, cls in enumerate(CLASS_NAMES):
-    axes[2].text(float(probs[i]) + 0.01, i, f"{float(probs[i]):.3f}", va="center")
+axes[2].set_xlabel("Probability", fontsize=10)
+axes[2].set_title("Class Probabilities", fontsize=11)
 
-plt.tight_layout()
+for i, cls in enumerate(CLASS_NAMES):
+    axes[2].text(
+        probs[i] + 0.015,
+        i,
+        f"{probs[i]:.3f}",
+        va="center",
+        fontsize=9
+    )
+
+plt.tight_layout(pad=2.0)
 st.pyplot(fig)
 
-# Save button only (no big final prediction text)
+# ---- Save button (clean, no duplicate prediction text)
 buf = io.BytesIO()
 fig.savefig(buf, format="png", bbox_inches="tight", dpi=170)
 buf.seek(0)
