@@ -579,24 +579,29 @@ except Exception as e:
 
 # ----------------------------
 # 9) OUTPUT (modern layout)
+# ----------------------------# ----------------------------
+# 9) OUTPUT
 # ----------------------------
+# Put title INSIDE the same white bar + remove big final prediction text
+
 st.markdown('<div class="card" style="margin-top: 1rem;">', unsafe_allow_html=True)
 st.markdown('<div class="card-title">Prediction Output</div>', unsafe_allow_html=True)
 
-# Chips row (more aesthetic than plain text)
+# Chips row
 chips = []
 chips.append(f"Model: {cam_title}")
 chips.append(f"Image: {chosen_label if chosen_label else 'Selected'}")
 chips.append(f"Prediction: {pred_class}")
-chips.append(f"Confidence: {confidence:.3f}")
+chips.append(f"Confidence: {float(np.max(probs)):.3f}")
 
-st.markdown('<div class="chips">' + "".join([f'<span class="chip">{c}</span>' for c in chips]) + '</div>', unsafe_allow_html=True)
+st.markdown(
+    '<div class="chips">' + "".join([f'<span class="chip">{c}</span>' for c in chips]) + '</div>',
+    unsafe_allow_html=True
+)
 st.markdown("</div>", unsafe_allow_html=True)
 
-st.markdown("")
-
-# Visual grid card
-st.markdown('<div class="card">', unsafe_allow_html=True)
+# Visuals card (separate, clean)
+st.markdown('<div class="card" style="margin-top: 1rem;">', unsafe_allow_html=True)
 
 fig, axes = plt.subplots(1, 3, figsize=(12.6, 4.25))
 
@@ -618,8 +623,7 @@ for i, cls in enumerate(CLASS_NAMES):
 plt.tight_layout()
 st.pyplot(fig)
 
-st.markdown(f"### Final Prediction: **{pred_class}**")
-
+# Save button only (REMOVED the big "Final Prediction" line)
 buf = io.BytesIO()
 fig.savefig(buf, format="png", bbox_inches="tight", dpi=170)
 buf.seek(0)
@@ -632,3 +636,4 @@ st.download_button(
 )
 
 st.markdown("</div>", unsafe_allow_html=True)
+
