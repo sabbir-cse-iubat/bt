@@ -21,13 +21,11 @@ import gdown
 import tensorflow as tf
 
 # ----------------------------
-# 0) BASIC SETUP
+# 0) PAGE SETUP
 # ----------------------------
 st.set_page_config(page_title="FHD-HybridNet Brain Tumor MRI", layout="wide")
 
 IMG_SIZE = (224, 224)
-
-# Must match your training generator class order (sorted folder names)
 CLASS_NAMES = ["glioma", "meningioma", "notumor", "pituitary"]
 NUM_CLASSES = len(CLASS_NAMES)
 
@@ -38,10 +36,6 @@ os.makedirs(MODEL_CACHE_DIR, exist_ok=True)
 # ----------------------------
 # 1) GOOGLE DRIVE IDs (.h5)
 # ----------------------------
-# Paste your real Google Drive FILE IDs here (the part after /d/)
-# Example:
-# https://drive.google.com/file/d/1ABC...xyz/view -> ID=1ABC...xyz
-
 H5_DENSENET_ID  = "1U7KwBmM7syLrU_F1aK0XThiMbAdHmfLC"
 H5_MOBILENET_ID = "1c5A7PQf7WF1ZiJFlHM3s6oFusQRvHjR0"
 H5_RESNET_ID    = "1LJEBxqHg_t9dQp1g6BykXGBIc1e7xZT0"
@@ -100,12 +94,11 @@ def _download_if_needed(file_id: str, filename: str) -> str:
     _validate_download(local_path)
     return local_path
 
+
 # ----------------------------
 # 2) BUILD MODELS (exact training head)
 # ----------------------------
 def _build_head(backbone):
-    # matches your notebook:
-    # Sequential([base, GAP, Dense(256), BN, Dropout(0.4), Dense(256), Dense(NUM_CLASSES, softmax)])
     return tf.keras.Sequential([
         backbone,
         tf.keras.layers.GlobalAveragePooling2D(),
@@ -120,23 +113,17 @@ def build_model_by_name(model_name: str):
     if model_name == "DenseNet121":
         base = tf.keras.applications.DenseNet121(include_top=False, weights=None, input_shape=(224, 224, 3))
         return _build_head(base)
-
     if model_name == "MobileNetV1":
         base = tf.keras.applications.MobileNet(include_top=False, weights=None, input_shape=(224, 224, 3))
         return _build_head(base)
-
     if model_name == "ResNet50V2":
         base = tf.keras.applications.ResNet50V2(include_top=False, weights=None, input_shape=(224, 224, 3))
         return _build_head(base)
-
     raise ValueError(f"Unknown model_name: {model_name}")
 
 def load_model_weights_safe(model_name: str, h5_path: str):
-    # rebuild model graph in code
     model = build_model_by_name(model_name)
     _ = model(tf.zeros((1, 224, 224, 3), dtype=tf.float32), training=False)
-
-    # load weights only (prevents your dense input error)
     model.load_weights(h5_path)
     return model
 
@@ -154,6 +141,7 @@ def load_all_models():
         "ResNet50V2":  load_single_model("ResNet50V2"),
     }
 
+
 # ----------------------------
 # 3) IMAGE HELPERS
 # ----------------------------
@@ -167,6 +155,7 @@ def load_image_from_file(file_or_path, img_size=IMG_SIZE):
     batch = np.expand_dims(arr, axis=0)
     return img, batch
 
+
 # ----------------------------
 # 4) YOUR EXACT GRADCAM PIPELINE
 # ----------------------------
@@ -178,8 +167,7 @@ def make_brain_mask_from_image(orig_pil):
 
     num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(th, connectivity=8)
     if num_labels <= 1:
-        mask = (th > 0).astype(np.float32)
-        return mask
+        return (th > 0).astype(np.float32)
 
     largest = 1 + np.argmax(stats[1:, cv2.CC_STAT_AREA])
     mask = (labels == largest).astype(np.float32)
@@ -330,10 +318,107 @@ def ensemble_predict_fhd_single(models_dict, img_batch):
     pred_idx = int(np.argmax(chosen_probs))
     return pred_idx, chosen_probs, chosen_key
 
+
+# ============================================================
+# ✅ MODERN UI THEME (white background, fancy cards)
+# ============================================================
+st.markdown(
+    """
+<style>
+/* overall */
+html, body, [class*="css"] { font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+section.main { background: #ffffff; }
+.block-container { padding-top: 1.25rem; padding-bottom: 2rem; max-width: 1200px; }
+
+/* sidebar */
+[data-testid="stSidebar"] { background: #fbfbfd; border-right: 1px solid #f0f1f5; }
+[data-testid="stSidebar"] .stMarkdown { color: #111827; }
+[data-testid="stSidebar"] .stButton button {
+    width: 100%;
+    border-radius: 12px;
+    padding: 0.7rem 1rem;
+    font-weight: 700;
+    border: 1px solid #e8eaf2;
+    background: linear-gradient(180deg, #111827 0%, #0b1220 100%);
+    color: white;
+}
+[data-testid="stSidebar"] .stButton button:hover { filter: brightness(1.08); }
+
+/* title */
+.hero {
+  border: 1px solid #eef0f6;
+  background: linear-gradient(180deg, #ffffff 0%, #fbfbff 100%);
+  border-radius: 18px;
+  padding: 1.25rem 1.25rem;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
+  margin-bottom: 1.25rem;
+}
+.hero h1 {
+  margin: 0;
+  font-size: 2.2rem;
+  letter-spacing: -0.03em;
+  color: #0f172a;
+}
+.hero p {
+  margin: 0.35rem 0 0;
+  color: #475569;
+  font-size: 1rem;
+  line-height: 1.45;
+}
+.badges {
+  margin-top: 0.8rem;
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.badge {
+  padding: 0.35rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.82rem;
+  border: 1px solid #e9edf7;
+  background: #ffffff;
+  color: #0f172a;
+}
+
+/* cards */
+.card {
+  border: 1px solid #eef0f6;
+  background: #ffffff;
+  border-radius: 18px;
+  padding: 1rem 1rem;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
+}
+.card-title {
+  font-size: 1.15rem;
+  font-weight: 800;
+  margin: 0 0 0.75rem;
+  color: #0f172a;
+}
+.hint {
+  color: #64748b;
+  font-size: 0.95rem;
+  margin-top: 0.35rem;
+}
+
+/* download button */
+div.stDownloadButton button {
+  border-radius: 12px;
+  padding: 0.6rem 1rem;
+  font-weight: 800;
+  border: 1px solid #e8eaf2;
+  background: #ffffff;
+}
+div.stDownloadButton button:hover { background: #f6f7fb; }
+</style>
+""",
+    unsafe_allow_html=True
+)
+
 # ----------------------------
 # 6) SIDEBAR UI
 # ----------------------------
-st.sidebar.title("Controls")
+st.sidebar.markdown("## Controls")
+st.sidebar.markdown("Pick a model, then choose an MRI image and run inference.")
 
 model_name = st.sidebar.selectbox(
     "Select model",
@@ -344,10 +429,13 @@ model_name = st.sidebar.selectbox(
 source = st.sidebar.radio("Choose image source", ["Upload MRI", "Sample gallery"], index=1)
 
 chosen_file = None
+chosen_label = None
+
 if source == "Upload MRI":
     uploaded = st.sidebar.file_uploader("Upload an MRI image", type=["png","jpg","jpeg","webp"])
     if uploaded is not None:
         chosen_file = uploaded
+        chosen_label = uploaded.name
 else:
     if os.path.isdir(SAMPLE_DIR):
         gallery_files = sorted([f for f in os.listdir(SAMPLE_DIR) if f.lower().endswith((".png",".jpg",".jpeg",".webp"))])
@@ -357,35 +445,64 @@ else:
     if gallery_files:
         sample_name = st.sidebar.selectbox("Pick a sample image", gallery_files)
         chosen_file = os.path.join(SAMPLE_DIR, sample_name)
+        chosen_label = sample_name
     else:
         st.sidebar.warning("No images found in sample_images/. Commit images into repo.")
 
 run_button = st.sidebar.button("▶ Run prediction")
 
 # ----------------------------
-# 7) MAIN HEADER
+# 7) HERO HEADER (modern)
 # ----------------------------
-st.title("FHD-HybridNet Brain Tumor MRI Classification")
 st.markdown(
-    """
-This app uses three CNN backbones (**DenseNet121, MobileNetV1, ResNet50V2**)  
-and a fuzzy-logic-based ensemble (**Fuzzy Hellinger Distance**)  
-to classify Brain Tumor MRI scans into **four classes**.
-"""
+    f"""
+<div class="hero">
+  <h1>FHD-HybridNet Brain Tumor MRI Classification</h1>
+  <p>
+    Ensemble inference with three CNN backbones and fuzzy-logic selection using
+    <b>Fuzzy Hellinger Distance</b>. Includes Grad-CAM visualization with brain masking.
+  </p>
+  <div class="badges">
+    <span class="badge">DenseNet121</span>
+    <span class="badge">MobileNetV1</span>
+    <span class="badge">ResNet50V2</span>
+    <span class="badge">FHD-HybridNet</span>
+    <span class="badge">Grad-CAM</span>
+  </div>
+</div>
+""",
+    unsafe_allow_html=True
 )
 
+# ----------------------------
+# Stop until run
+# ----------------------------
 if not run_button:
+    st.markdown(
+        """
+<div class="card">
+  <div class="card-title">Quick Start</div>
+  <ul style="margin:0; padding-left: 1.2rem; color:#334155;">
+    <li>Select <b>FHD-HybridNet</b> or a single model</li>
+    <li>Choose an MRI image from upload or sample gallery</li>
+    <li>Click <b>Run prediction</b> to see probabilities + Grad-CAM</li>
+  </ul>
+  <div class="hint">Tip: Keep sample images inside <code>sample_images/</code> for gallery mode.</div>
+</div>
+""",
+        unsafe_allow_html=True
+    )
     st.stop()
 
 if chosen_file is None:
     st.error("Please upload or select an image first.")
     st.stop()
 
-orig_img, batch = load_image_from_file(chosen_file, IMG_SIZE)
-
 # ----------------------------
 # 8) INFERENCE + GRADCAM
 # ----------------------------
+orig_img, batch = load_image_from_file(chosen_file, IMG_SIZE)
+
 try:
     with st.spinner("Running prediction…"):
         if model_name == "FHD-HybridNet":
@@ -393,7 +510,6 @@ try:
             pred_idx, probs, chosen_key = ensemble_predict_fhd_single(models_dict, batch)
             cam_model = models_dict[chosen_key]
             cam_title = "FHD-HybridNet"
-
         else:
             cam_model = load_single_model(model_name)
             probs = predict_probs(cam_model, batch)
@@ -401,11 +517,18 @@ try:
             cam_title = model_name
 
     pred_class = CLASS_NAMES[pred_idx]
+    confidence = float(np.max(probs))
 
     with st.spinner("Computing Grad-CAM…"):
         heatmap, _ = gradcam_hooked(cam_model, batch, class_index=pred_idx)
         brain_mask = make_brain_mask_from_image(orig_img)
-        heatmap2 = enhance_heatmap(heatmap, brain_mask=brain_mask, gamma=1.8, keep_percentile=85, keep_largest_blob=True)
+        heatmap2 = enhance_heatmap(
+            heatmap,
+            brain_mask=brain_mask,
+            gamma=1.8,
+            keep_percentile=85,
+            keep_largest_blob=True
+        )
         overlay = overlay_gradcam_on_image_fixed(heatmap2, orig_img, alpha=0.45)
 
 except Exception as e:
@@ -414,12 +537,34 @@ except Exception as e:
     st.stop()
 
 # ----------------------------
-# 9) OUTPUT
+# 9) MODERN OUTPUT SECTION
 # ----------------------------
-st.markdown("---")
-st.subheader("Prediction Output")
+st.markdown(
+    """
+<div class="card">
+  <div class="card-title">Prediction Output</div>
+</div>
+""",
+    unsafe_allow_html=True
+)
 
-fig, axes = plt.subplots(1, 3, figsize=(12, 4))
+# Summary row
+c1, c2, c3, c4 = st.columns([1.2, 1.2, 1.2, 1.2])
+with c1:
+    st.metric("Selected Model", cam_title)
+with c2:
+    st.metric("Image", chosen_label if chosen_label else "Selected")
+with c3:
+    st.metric("Predicted Class", pred_class)
+with c4:
+    st.metric("Confidence", f"{confidence:.3f}")
+
+st.markdown("")
+
+# Visuals in a “card”
+st.markdown('<div class="card">', unsafe_allow_html=True)
+
+fig, axes = plt.subplots(1, 3, figsize=(12.5, 4.2))
 
 axes[0].imshow(orig_img)
 axes[0].set_title(f"Original\nPredicted: {pred_class}")
@@ -439,10 +584,10 @@ for i, cls in enumerate(CLASS_NAMES):
 plt.tight_layout()
 st.pyplot(fig)
 
-st.markdown(f"#### Final Prediction : *{pred_class}*")
+st.markdown(f"### Final Prediction: **{pred_class}**")
 
 buf = io.BytesIO()
-fig.savefig(buf, format="png", bbox_inches="tight", dpi=150)
+fig.savefig(buf, format="png", bbox_inches="tight", dpi=160)
 buf.seek(0)
 
 st.download_button(
@@ -451,3 +596,5 @@ st.download_button(
     file_name=f"result_{pred_class}.png",
     mime="image/png"
 )
+
+st.markdown("</div>", unsafe_allow_html=True)
