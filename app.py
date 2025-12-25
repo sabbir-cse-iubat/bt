@@ -99,6 +99,8 @@ def _download_if_needed(file_id: str, filename: str) -> str:
 # 2) BUILD MODELS (exact training head)
 # ----------------------------
 def _build_head(backbone):
+    # matches your notebook:
+    # Sequential([base, GAP, Dense(256), BN, Dropout(0.4), Dense(256), Dense(NUM_CLASSES, softmax)])
     return tf.keras.Sequential([
         backbone,
         tf.keras.layers.GlobalAveragePooling2D(),
@@ -290,7 +292,7 @@ def gradcam_hooked(seq_model, img_batch, class_index=None):
 
 
 # ----------------------------
-# 5) FHD ENSEMBLE (same logic)
+# 5) FHD ENSEMBLE
 # ----------------------------
 def fuzzy_hellinger_distance(p1, p2):
     return 0.5 * np.sum((np.sqrt(p1) - np.sqrt(p2)) ** 2)
@@ -313,112 +315,152 @@ def ensemble_predict_fhd_single(models_dict, img_batch):
         avg_fhd.append(float(np.mean(d)))
 
     best_idx = int(np.argmin(avg_fhd))
-    chosen_key = keys[best_idx]
     chosen_probs = preds_list[best_idx]
     pred_idx = int(np.argmax(chosen_probs))
+    chosen_key = keys[best_idx]
     return pred_idx, chosen_probs, chosen_key
 
 
 # ============================================================
-# ✅ MODERN UI THEME (white background, fancy cards)
+# ✅ TRENDY / MODERN UI (white bg)
 # ============================================================
 st.markdown(
     """
 <style>
-/* overall */
+:root{
+  --bg: #ffffff;
+  --ink: #0b1220;
+  --muted: #5b6475;
+  --line: #eef0f6;
+  --card: rgba(255,255,255,0.86);
+  --shadow: 0 18px 45px rgba(15, 23, 42, 0.08);
+  --shadow2: 0 10px 24px rgba(15, 23, 42, 0.06);
+  --radius: 20px;
+}
+
+/* Base */
 html, body, [class*="css"] { font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
-section.main { background: #ffffff; }
-.block-container { padding-top: 1.25rem; padding-bottom: 2rem; max-width: 1200px; }
+section.main { background: var(--bg); }
+.block-container { padding-top: 1.2rem; padding-bottom: 2.2rem; max-width: 1220px; }
 
-/* sidebar */
-[data-testid="stSidebar"] { background: #fbfbfd; border-right: 1px solid #f0f1f5; }
-[data-testid="stSidebar"] .stMarkdown { color: #111827; }
-[data-testid="stSidebar"] .stButton button {
-    width: 100%;
-    border-radius: 12px;
-    padding: 0.7rem 1rem;
-    font-weight: 700;
-    border: 1px solid #e8eaf2;
-    background: linear-gradient(180deg, #111827 0%, #0b1220 100%);
-    color: white;
+/* Sidebar */
+[data-testid="stSidebar"]{
+  background: #fbfbff;
+  border-right: 1px solid var(--line);
 }
-[data-testid="stSidebar"] .stButton button:hover { filter: brightness(1.08); }
+[data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3 {
+  color: var(--ink);
+}
+[data-testid="stSidebar"] .stRadio label, [data-testid="stSidebar"] .stSelectbox label, [data-testid="stSidebar"] label {
+  color: #111827 !important;
+  font-weight: 700;
+}
+[data-testid="stSidebar"] .stButton button{
+  width: 100%;
+  border-radius: 14px;
+  padding: 0.75rem 1rem;
+  font-weight: 900;
+  border: 1px solid #e8eaf2;
+  background: linear-gradient(135deg, #0b1220 0%, #111827 45%, #0b1220 100%);
+  color: #fff;
+  box-shadow: var(--shadow2);
+}
+[data-testid="stSidebar"] .stButton button:hover{ filter: brightness(1.08); }
 
-/* title */
-.hero {
-  border: 1px solid #eef0f6;
-  background: linear-gradient(180deg, #ffffff 0%, #fbfbff 100%);
-  border-radius: 18px;
+/* Hero */
+.hero{
+  position: relative;
+  border: 1px solid var(--line);
+  border-radius: 24px;
   padding: 1.25rem 1.25rem;
-  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
-  margin-bottom: 1.25rem;
+  box-shadow: var(--shadow);
+  overflow: hidden;
+  background: radial-gradient(1200px 260px at 10% 0%, rgba(99,102,241,0.18), transparent 60%),
+              radial-gradient(1200px 260px at 90% 0%, rgba(16,185,129,0.14), transparent 60%),
+              linear-gradient(180deg, #ffffff 0%, #fbfbff 100%);
 }
-.hero h1 {
-  margin: 0;
-  font-size: 2.2rem;
-  letter-spacing: -0.03em;
-  color: #0f172a;
+.hero h1{
+  margin:0;
+  font-size: 2.45rem;
+  letter-spacing: -0.04em;
+  color: var(--ink);
+  font-weight: 950;
 }
-.hero p {
-  margin: 0.35rem 0 0;
-  color: #475569;
-  font-size: 1rem;
-  line-height: 1.45;
+.hero p{
+  margin: 0.45rem 0 0;
+  color: var(--muted);
+  font-size: 1.02rem;
+  line-height: 1.55;
+  max-width: 980px;
 }
-.badges {
-  margin-top: 0.8rem;
-  display: flex;
-  gap: 0.5rem;
-  flex-wrap: wrap;
-}
-.badge {
-  padding: 0.35rem 0.6rem;
+.pills{ margin-top: 0.85rem; display:flex; flex-wrap:wrap; gap:0.5rem; }
+.pill{
+  padding: 0.38rem 0.7rem;
   border-radius: 999px;
   font-size: 0.82rem;
   border: 1px solid #e9edf7;
-  background: #ffffff;
+  background: rgba(255,255,255,0.75);
+  backdrop-filter: blur(8px);
   color: #0f172a;
+  font-weight: 800;
 }
 
-/* cards */
-.card {
-  border: 1px solid #eef0f6;
-  background: #ffffff;
-  border-radius: 18px;
+/* Cards */
+.card{
+  border: 1px solid var(--line);
+  background: var(--card);
+  border-radius: var(--radius);
   padding: 1rem 1rem;
-  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
+  box-shadow: var(--shadow2);
+  backdrop-filter: blur(10px);
 }
-.card-title {
-  font-size: 1.15rem;
-  font-weight: 800;
-  margin: 0 0 0.75rem;
-  color: #0f172a;
+.card-title{
+  font-size: 1.1rem;
+  font-weight: 950;
+  margin: 0 0 0.6rem;
+  color: var(--ink);
 }
-.hint {
-  color: #64748b;
+.small{
+  color: var(--muted);
   font-size: 0.95rem;
-  margin-top: 0.35rem;
+  line-height: 1.5;
 }
 
-/* download button */
-div.stDownloadButton button {
-  border-radius: 12px;
-  padding: 0.6rem 1rem;
-  font-weight: 800;
-  border: 1px solid #e8eaf2;
-  background: #ffffff;
+/* Metric chips */
+.chips{ display:flex; flex-wrap:wrap; gap: 0.55rem; margin-top: 0.2rem; }
+.chip{
+  border: 1px solid #e9edf7;
+  border-radius: 999px;
+  padding: 0.45rem 0.75rem;
+  background: rgba(255,255,255,0.75);
+  font-weight: 900;
+  color: #0f172a;
+  font-size: 0.88rem;
 }
-div.stDownloadButton button:hover { background: #f6f7fb; }
+
+/* Buttons */
+div.stDownloadButton button{
+  border-radius: 14px !important;
+  padding: 0.72rem 1rem !important;
+  font-weight: 950 !important;
+  border: 1px solid #e8eaf2 !important;
+  background: #ffffff !important;
+  box-shadow: var(--shadow2);
+}
+div.stDownloadButton button:hover{ background:#f7f8fc !important; }
+
+/* Hide Streamlit default footer/menu spacing */
+footer { visibility: hidden; }
 </style>
 """,
     unsafe_allow_html=True
 )
 
 # ----------------------------
-# 6) SIDEBAR UI
+# 6) SIDEBAR
 # ----------------------------
 st.sidebar.markdown("## Controls")
-st.sidebar.markdown("Pick a model, then choose an MRI image and run inference.")
+st.sidebar.markdown("Choose a model and provide an MRI image.")
 
 model_name = st.sidebar.selectbox(
     "Select model",
@@ -452,22 +494,22 @@ else:
 run_button = st.sidebar.button("▶ Run prediction")
 
 # ----------------------------
-# 7) HERO HEADER (modern)
+# 7) HERO HEADER
 # ----------------------------
 st.markdown(
-    f"""
+    """
 <div class="hero">
-  <h1>FHD-HybridNet Brain Tumor MRI Classification</h1>
+  <h1>FHD-HybridNet Brain Tumor MRI</h1>
   <p>
-    Ensemble inference with three CNN backbones and fuzzy-logic selection using
-    <b>Fuzzy Hellinger Distance</b>. Includes Grad-CAM visualization with brain masking.
+    Three CNN backbones with fuzzy-logic selection using <b>Fuzzy Hellinger Distance</b>,
+    plus Grad-CAM visualization with brain masking for clearer clinical focus.
   </p>
-  <div class="badges">
-    <span class="badge">DenseNet121</span>
-    <span class="badge">MobileNetV1</span>
-    <span class="badge">ResNet50V2</span>
-    <span class="badge">FHD-HybridNet</span>
-    <span class="badge">Grad-CAM</span>
+  <div class="pills">
+    <span class="pill">DenseNet121</span>
+    <span class="pill">MobileNetV1</span>
+    <span class="pill">ResNet50V2</span>
+    <span class="pill">FHD Ensemble</span>
+    <span class="pill">Grad-CAM</span>
   </div>
 </div>
 """,
@@ -475,19 +517,18 @@ st.markdown(
 )
 
 # ----------------------------
-# Stop until run
+# Pre-run card
 # ----------------------------
 if not run_button:
     st.markdown(
         """
-<div class="card">
-  <div class="card-title">Quick Start</div>
-  <ul style="margin:0; padding-left: 1.2rem; color:#334155;">
-    <li>Select <b>FHD-HybridNet</b> or a single model</li>
-    <li>Choose an MRI image from upload or sample gallery</li>
-    <li>Click <b>Run prediction</b> to see probabilities + Grad-CAM</li>
-  </ul>
-  <div class="hint">Tip: Keep sample images inside <code>sample_images/</code> for gallery mode.</div>
+<div class="card" style="margin-top: 1rem;">
+  <div class="card-title">How to use</div>
+  <div class="small">
+    1) Pick <b>FHD-HybridNet</b> (or a single model)<br/>
+    2) Upload an MRI or select from the gallery<br/>
+    3) Click <b>Run prediction</b> to view probabilities + Grad-CAM
+  </div>
 </div>
 """,
         unsafe_allow_html=True
@@ -509,7 +550,7 @@ try:
             models_dict = load_all_models()
             pred_idx, probs, chosen_key = ensemble_predict_fhd_single(models_dict, batch)
             cam_model = models_dict[chosen_key]
-            cam_title = "FHD-HybridNet"
+            cam_title = "FHD-HybridNet"  # ✅ no chosen model text
         else:
             cam_model = load_single_model(model_name)
             probs = predict_probs(cam_model, batch)
@@ -537,34 +578,27 @@ except Exception as e:
     st.stop()
 
 # ----------------------------
-# 9) MODERN OUTPUT SECTION
+# 9) OUTPUT (modern layout)
 # ----------------------------
-st.markdown(
-    """
-<div class="card">
-  <div class="card-title">Prediction Output</div>
-</div>
-""",
-    unsafe_allow_html=True
-)
+st.markdown('<div class="card" style="margin-top: 1rem;">', unsafe_allow_html=True)
+st.markdown('<div class="card-title">Prediction Output</div>', unsafe_allow_html=True)
 
-# Summary row
-c1, c2, c3, c4 = st.columns([1.2, 1.2, 1.2, 1.2])
-with c1:
-    st.metric("Selected Model", cam_title)
-with c2:
-    st.metric("Image", chosen_label if chosen_label else "Selected")
-with c3:
-    st.metric("Predicted Class", pred_class)
-with c4:
-    st.metric("Confidence", f"{confidence:.3f}")
+# Chips row (more aesthetic than plain text)
+chips = []
+chips.append(f"Model: {cam_title}")
+chips.append(f"Image: {chosen_label if chosen_label else 'Selected'}")
+chips.append(f"Prediction: {pred_class}")
+chips.append(f"Confidence: {confidence:.3f}")
+
+st.markdown('<div class="chips">' + "".join([f'<span class="chip">{c}</span>' for c in chips]) + '</div>', unsafe_allow_html=True)
+st.markdown("</div>", unsafe_allow_html=True)
 
 st.markdown("")
 
-# Visuals in a “card”
+# Visual grid card
 st.markdown('<div class="card">', unsafe_allow_html=True)
 
-fig, axes = plt.subplots(1, 3, figsize=(12.5, 4.2))
+fig, axes = plt.subplots(1, 3, figsize=(12.6, 4.25))
 
 axes[0].imshow(orig_img)
 axes[0].set_title(f"Original\nPredicted: {pred_class}")
@@ -587,7 +621,7 @@ st.pyplot(fig)
 st.markdown(f"### Final Prediction: **{pred_class}**")
 
 buf = io.BytesIO()
-fig.savefig(buf, format="png", bbox_inches="tight", dpi=160)
+fig.savefig(buf, format="png", bbox_inches="tight", dpi=170)
 buf.seek(0)
 
 st.download_button(
