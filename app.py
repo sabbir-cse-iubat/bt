@@ -583,24 +583,27 @@ except Exception as e:
 # 9) OUTPUT
 # ----------------------------
 # Put title INSIDE the same white bar + remove big final prediction text
+# ----------------------------
+# 9) OUTPUT
+# ----------------------------
 
-st.markdown('<div class="card" style="margin-top: 1rem;">', unsafe_allow_html=True)
-st.markdown('<div class="card-title">Prediction Output</div>', unsafe_allow_html=True)
-
-# Chips row
-chips = []
-chips.append(f"Model: {cam_title}")
-chips.append(f"Image: {chosen_label if chosen_label else 'Selected'}")
-chips.append(f"Prediction: {pred_class}")
-chips.append(f"Confidence: {float(np.max(probs)):.3f}")
-
+# 1) Title + chips INSIDE the same white card (single block)
 st.markdown(
-    '<div class="chips">' + "".join([f'<span class="chip">{c}</span>' for c in chips]) + '</div>',
+    f"""
+    <div class="card" style="margin-top: 1rem;">
+      <div class="card-title">Prediction Output</div>
+      <div class="chips">
+        <span class="chip"><b>Model:</b> {cam_title}</span>
+        <span class="chip"><b>Image:</b> {chosen_label if chosen_label else "Selected"}</span>
+        <span class="chip"><b>Prediction:</b> {pred_class}</span>
+        <span class="chip"><b>Confidence:</b> {float(np.max(probs)):.3f}</span>
+      </div>
+    </div>
+    """,
     unsafe_allow_html=True
 )
-st.markdown("</div>", unsafe_allow_html=True)
 
-# Visuals card (separate, clean)
+# 2) Visuals card
 st.markdown('<div class="card" style="margin-top: 1rem;">', unsafe_allow_html=True)
 
 fig, axes = plt.subplots(1, 3, figsize=(12.6, 4.25))
@@ -613,7 +616,8 @@ axes[1].imshow(overlay)
 axes[1].set_title(f"Grad-CAM\n{cam_title}")
 axes[1].axis("off")
 
-axes[2].barh(CLASS_NAMES, probs)
+# ✅ Probabilities bar color set to #10bb82
+axes[2].barh(CLASS_NAMES, probs, color="#10bb82")
 axes[2].set_xlim(0, 1)
 axes[2].set_xlabel("Probability")
 axes[2].set_title("Probabilities")
@@ -623,7 +627,7 @@ for i, cls in enumerate(CLASS_NAMES):
 plt.tight_layout()
 st.pyplot(fig)
 
-# Save button only (REMOVED the big "Final Prediction" line)
+# Save button only (no big final prediction text)
 buf = io.BytesIO()
 fig.savefig(buf, format="png", bbox_inches="tight", dpi=170)
 buf.seek(0)
