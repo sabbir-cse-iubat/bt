@@ -33,6 +33,88 @@ SAMPLE_DIR = "sample_images"
 MODEL_CACHE_DIR = "models_cache"
 os.makedirs(MODEL_CACHE_DIR, exist_ok=True)
 
+# ✅ Sidebar dashboard CSS (your update)
+st.markdown("""
+<style>
+/* -------- Sidebar: keep same bg, make content modern -------- */
+section[data-testid="stSidebar"]{
+  padding-top: 14px;
+}
+section[data-testid="stSidebar"] > div{
+  padding: 14px 14px 18px 14px;
+}
+
+/* Title */
+.sb-title{
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: .2px;
+  margin: 6px 0 4px 0;
+}
+.sb-sub{
+  font-size: 13px;
+  opacity: .75;
+  margin-bottom: 14px;
+  line-height: 1.35;
+}
+
+/* Sidebar cards */
+.sb-card{
+  background: rgba(255,255,255,0.55);
+  border: 1px solid rgba(20,20,20,0.06);
+  border-radius: 16px;
+  padding: 12px 12px;
+  margin: 10px 0;
+  box-shadow: 0 10px 25px rgba(0,0,0,0.05);
+}
+.sb-label{
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: .2px;
+  opacity: .75;
+  margin-bottom: 8px;
+}
+
+/* Pills */
+.sb-pill-row{
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+  margin-top:8px;
+}
+.sb-pill{
+  font-size: 11px;
+  font-weight: 700;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.75);
+  border: 1px solid rgba(20,20,20,0.06);
+}
+
+/* Make Streamlit widgets inside sidebar cleaner */
+section[data-testid="stSidebar"] .stSelectbox > div,
+section[data-testid="stSidebar"] .stRadio > div,
+section[data-testid="stSidebar"] .stFileUploader > div{
+  border-radius: 14px !important;
+}
+
+/* Button - modern, wide */
+section[data-testid="stSidebar"] .stButton > button{
+  width: 100%;
+  border-radius: 16px;
+  padding: 12px 14px;
+  font-weight: 800;
+  border: 1px solid rgba(0,0,0,0.06);
+  box-shadow: 0 12px 30px rgba(0,0,0,0.10);
+  transition: transform .06s ease, box-shadow .2s ease;
+}
+section[data-testid="stSidebar"] .stButton > button:hover{
+  transform: translateY(-1px);
+  box-shadow: 0 16px 34px rgba(0,0,0,0.14);
+}
+</style>
+""", unsafe_allow_html=True)
+
 # ----------------------------
 # 1) GOOGLE DRIVE IDs (.h5)
 # ----------------------------
@@ -72,10 +154,7 @@ def _validate_download(path: str):
 
 def _download_if_needed(file_id: str, filename: str) -> str:
     if not file_id or "PASTE_" in file_id:
-        raise RuntimeError(
-            "H5 model IDs are not set.\n"
-            "Open app.py and replace H5_DENSENET_ID / H5_MOBILENET_ID / H5_RESNET_ID with your real Drive FILE IDs."
-        )
+        raise RuntimeError("H5 model IDs are not set correctly.")
 
     local_path = os.path.join(MODEL_CACHE_DIR, filename)
 
@@ -94,13 +173,10 @@ def _download_if_needed(file_id: str, filename: str) -> str:
     _validate_download(local_path)
     return local_path
 
-
 # ----------------------------
 # 2) BUILD MODELS (exact training head)
 # ----------------------------
 def _build_head(backbone):
-    # matches your notebook:
-    # Sequential([base, GAP, Dense(256), BN, Dropout(0.4), Dense(256), Dense(NUM_CLASSES, softmax)])
     return tf.keras.Sequential([
         backbone,
         tf.keras.layers.GlobalAveragePooling2D(),
@@ -143,7 +219,6 @@ def load_all_models():
         "ResNet50V2":  load_single_model("ResNet50V2"),
     }
 
-
 # ----------------------------
 # 3) IMAGE HELPERS
 # ----------------------------
@@ -157,14 +232,12 @@ def load_image_from_file(file_or_path, img_size=IMG_SIZE):
     batch = np.expand_dims(arr, axis=0)
     return img, batch
 
-
 # ----------------------------
 # 4) YOUR EXACT GRADCAM PIPELINE
 # ----------------------------
 def make_brain_mask_from_image(orig_pil):
     img = np.array(orig_pil.convert("L"))
     img = cv2.GaussianBlur(img, (5,5), 0)
-
     _, th = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
     num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(th, connectivity=8)
@@ -193,7 +266,6 @@ def enhance_heatmap(heatmap, brain_mask=None, gamma=1.8, keep_percentile=85, kee
         h = h / (h.max() + 1e-8)
 
     h = np.power(h, gamma)
-
     thr = np.percentile(h, keep_percentile)
     h = np.where(h >= thr, h, 0.0)
 
@@ -237,16 +309,13 @@ def pick_rank4_feature_layer(backbone, input_shape=(224,224,3)):
                 continue
             shp = out.shape
             if shp is not None and len(shp) == 4:
-                lname = layer.name.lower()
-                bonus = 1 if ("conv" in lname or "block" in lname or "mixed" in lname or "relu" in lname) else 0
-                candidates.append((i, bonus, layer.name))
+                candidates.append((i, layer.name))
         except Exception:
             pass
 
     if not candidates:
         raise ValueError("No rank-4 feature layer found in backbone.")
-    candidates.sort(key=lambda x: (x[0], x[1]))
-    return candidates[-1][2]
+    return candidates[-1][1]
 
 def gradcam_hooked(seq_model, img_batch, class_index=None):
     backbone = get_backbone(seq_model)
@@ -265,7 +334,6 @@ def gradcam_hooked(seq_model, img_batch, class_index=None):
         return out
 
     target_layer.call = wrapped_call
-
     x = tf.convert_to_tensor(img_batch, dtype=tf.float32)
 
     with tf.GradientTape() as tape:
@@ -278,9 +346,6 @@ def gradcam_hooked(seq_model, img_batch, class_index=None):
     grads = tape.gradient(loss, conv_out["val"])
     target_layer.call = original_call
 
-    if conv_out["val"] is None or grads is None:
-        raise RuntimeError("Failed to capture feature map / gradients for Grad-CAM.")
-
     pooled_grads = tf.reduce_mean(grads, axis=(0,1,2))
     conv_map = conv_out["val"][0]
 
@@ -289,7 +354,6 @@ def gradcam_hooked(seq_model, img_batch, class_index=None):
     heatmap = heatmap / (tf.reduce_max(heatmap) + 1e-8)
 
     return heatmap.numpy(), preds.numpy()[0]
-
 
 # ----------------------------
 # 5) FHD ENSEMBLE
@@ -320,219 +384,102 @@ def ensemble_predict_fhd_single(models_dict, img_batch):
     chosen_key = keys[best_idx]
     return pred_idx, chosen_probs, chosen_key
 
-
-# ============================================================
-# ✅ TRENDY / MODERN UI (white bg)
-# ============================================================
-st.markdown(
-    """
-<style>
-:root{
-  --bg: #ffffff;
-  --ink: #0b1220;
-  --muted: #5b6475;
-  --line: #eef0f6;
-  --card: rgba(255,255,255,0.86);
-  --shadow: 0 18px 45px rgba(15, 23, 42, 0.08);
-  --shadow2: 0 10px 24px rgba(15, 23, 42, 0.06);
-  --radius: 20px;
-}
-
-/* Base */
-html, body, [class*="css"] { font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
-section.main { background: var(--bg); }
-.block-container { padding-top: 1.2rem; padding-bottom: 2.2rem; max-width: 1220px; }
-
-/* Sidebar */
-[data-testid="stSidebar"]{
-  background: #fbfbff;
-  border-right: 1px solid var(--line);
-}
-[data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3 {
-  color: var(--ink);
-}
-[data-testid="stSidebar"] .stRadio label, [data-testid="stSidebar"] .stSelectbox label, [data-testid="stSidebar"] label {
-  color: #111827 !important;
-  font-weight: 700;
-}
-[data-testid="stSidebar"] .stButton button{
-  width: 100%;
-  border-radius: 14px;
-  padding: 0.75rem 1rem;
-  font-weight: 900;
-  border: 1px solid #e8eaf2;
-  background: linear-gradient(135deg, #0b1220 0%, #111827 45%, #0b1220 100%);
-  color: #fff;
-  box-shadow: var(--shadow2);
-}
-[data-testid="stSidebar"] .stButton button:hover{ filter: brightness(1.08); }
-
-/* Hero */
-.hero{
-  position: relative;
-  border: 1px solid var(--line);
-  border-radius: 24px;
-  padding: 1.25rem 1.25rem;
-  box-shadow: var(--shadow);
-  overflow: hidden;
-  background: radial-gradient(1200px 260px at 10% 0%, rgba(99,102,241,0.18), transparent 60%),
-              radial-gradient(1200px 260px at 90% 0%, rgba(16,185,129,0.14), transparent 60%),
-              linear-gradient(180deg, #ffffff 0%, #fbfbff 100%);
-}
-.hero h1{
-  margin:0;
-  font-size: 2.45rem;
-  letter-spacing: -0.04em;
-  color: var(--ink);
-  font-weight: 950;
-}
-.hero p{
-  margin: 0.45rem 0 0;
-  color: var(--muted);
-  font-size: 1.02rem;
-  line-height: 1.55;
-  max-width: 980px;
-}
-.pills{ margin-top: 0.85rem; display:flex; flex-wrap:wrap; gap:0.5rem; }
-.pill{
-  padding: 0.38rem 0.7rem;
-  border-radius: 999px;
-  font-size: 0.82rem;
-  border: 1px solid #e9edf7;
-  background: rgba(255,255,255,0.75);
-  backdrop-filter: blur(8px);
-  color: #0f172a;
-  font-weight: 800;
-}
-
-/* Cards */
-.card{
-  border: 1px solid var(--line);
-  background: var(--card);
-  border-radius: var(--radius);
-  padding: 1rem 1rem;
-  box-shadow: var(--shadow2);
-  backdrop-filter: blur(10px);
-}
-.card-title{
-  font-size: 1.1rem;
-  font-weight: 950;
-  margin: 0 0 0.6rem;
-  color: var(--ink);
-}
-.small{
-  color: var(--muted);
-  font-size: 0.95rem;
-  line-height: 1.5;
-}
-
-/* Metric chips */
-.chips{ display:flex; flex-wrap:wrap; gap: 0.55rem; margin-top: 0.2rem; }
-.chip{
-  border: 1px solid #e9edf7;
-  border-radius: 999px;
-  padding: 0.45rem 0.75rem;
-  background: rgba(255,255,255,0.75);
-  font-weight: 900;
-  color: #0f172a;
-  font-size: 0.88rem;
-}
-
-/* Buttons */
-div.stDownloadButton button{
-  border-radius: 14px !important;
-  padding: 0.72rem 1rem !important;
-  font-weight: 950 !important;
-  border: 1px solid #e8eaf2 !important;
-  background: #ffffff !important;
-  box-shadow: var(--shadow2);
-}
-div.stDownloadButton button:hover{ background:#f7f8fc !important; }
-
-/* Hide Streamlit default footer/menu spacing */
-footer { visibility: hidden; }
-</style>
-""",
-    unsafe_allow_html=True
-)
-
 # ----------------------------
-# 6) SIDEBAR
+# 6) SIDEBAR (dashboard style)
 # ----------------------------
-st.sidebar.markdown("## Controls")
-st.sidebar.markdown("Choose a model and provide an MRI image.")
+with st.sidebar:
+    st.markdown('<div class="sb-title">Controls</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sb-sub">Choose a model and provide an MRI image for prediction and Grad-CAM visualization.</div>', unsafe_allow_html=True)
 
-model_name = st.sidebar.selectbox(
-    "Select model",
-    ["DenseNet121", "MobileNetV1", "ResNet50V2", "FHD-HybridNet"],
-    index=3
-)
+    st.markdown('<div class="sb-card">', unsafe_allow_html=True)
+    st.markdown('<div class="sb-label">Select model</div>', unsafe_allow_html=True)
+    model_name = st.selectbox(
+        "Select model",
+        ["DenseNet121", "MobileNetV1", "ResNet50V2", "FHD-HybridNet"],
+        index=3,
+        label_visibility="collapsed"
+    )
+    st.markdown(
+        '<div class="sb-pill-row">'
+        '<div class="sb-pill">FHD Ensemble</div>'
+        '<div class="sb-pill">Grad-CAM</div>'
+        '<div class="sb-pill">224×224</div>'
+        '</div>',
+        unsafe_allow_html=True
+    )
+    st.markdown('</div>', unsafe_allow_html=True)
 
-source = st.sidebar.radio("Choose image source", ["Upload MRI", "Sample gallery"], index=1)
+    st.markdown('<div class="sb-card">', unsafe_allow_html=True)
+    st.markdown('<div class="sb-label">Image source</div>', unsafe_allow_html=True)
+    source = st.radio(
+        "Choose image source",
+        ["Upload MRI", "Sample gallery"],
+        index=1,
+        label_visibility="collapsed"
+    )
 
-chosen_file = None
-chosen_label = None
+    chosen_file = None
+    chosen_label = None
 
-if source == "Upload MRI":
-    uploaded = st.sidebar.file_uploader("Upload an MRI image", type=["png","jpg","jpeg","webp"])
-    if uploaded is not None:
-        chosen_file = uploaded
-        chosen_label = uploaded.name
-else:
-    if os.path.isdir(SAMPLE_DIR):
-        gallery_files = sorted([f for f in os.listdir(SAMPLE_DIR) if f.lower().endswith((".png",".jpg",".jpeg",".webp"))])
+    if source == "Upload MRI":
+        uploaded = st.file_uploader(
+            "Upload an MRI image",
+            type=["png", "jpg", "jpeg", "webp"],
+            label_visibility="collapsed"
+        )
+        if uploaded is not None:
+            chosen_file = uploaded
+            chosen_label = uploaded.name
+            st.markdown(
+                f'<div class="sb-pill-row"><div class="sb-pill">Uploaded</div>'
+                f'<div class="sb-pill">{uploaded.name}</div></div>',
+                unsafe_allow_html=True
+            )
     else:
-        gallery_files = []
+        if os.path.isdir(SAMPLE_DIR):
+            gallery_files = sorted([f for f in os.listdir(SAMPLE_DIR)
+                                    if f.lower().endswith((".png", ".jpg", ".jpeg", ".webp"))])
+        else:
+            gallery_files = []
 
-    if gallery_files:
-        sample_name = st.sidebar.selectbox("Pick a sample image", gallery_files)
-        chosen_file = os.path.join(SAMPLE_DIR, sample_name)
-        chosen_label = sample_name
-    else:
-        st.sidebar.warning("No images found in sample_images/. Commit images into repo.")
+        if gallery_files:
+            st.markdown('<div class="sb-label" style="margin-top:10px;">Pick a sample</div>', unsafe_allow_html=True)
+            sample_name = st.selectbox(
+                "Pick a sample image",
+                gallery_files,
+                label_visibility="collapsed"
+            )
+            chosen_file = os.path.join(SAMPLE_DIR, sample_name)
+            chosen_label = sample_name
+            st.markdown(
+                f'<div class="sb-pill-row"><div class="sb-pill">Sample</div>'
+                f'<div class="sb-pill">{sample_name}</div></div>',
+                unsafe_allow_html=True
+            )
+        else:
+            st.warning("No images found in sample_images/. Commit images into repo.")
+    st.markdown('</div>', unsafe_allow_html=True)
 
-run_button = st.sidebar.button("▶ Run prediction")
+    run_button = st.button("▶ Run prediction")
 
 # ----------------------------
-# 7) HERO HEADER
+# 7) MAIN AREA TITLE (simple, clean)
 # ----------------------------
 st.markdown(
     """
-<div class="hero">
-  <h1>FHD-HybridNet Brain Tumor MRI</h1>
-  <p>
+<div style="padding: 6px 2px 6px 2px;">
+  <h1 style="margin:0; font-size: 2.2rem; font-weight: 900; letter-spacing: -0.03em;">FHD-HybridNet Brain Tumor MRI</h1>
+  <p style="margin: 6px 0 0; opacity: .78; line-height: 1.5;">
     Three CNN backbones with fuzzy-logic selection using <b>Fuzzy Hellinger Distance</b>,
     plus Grad-CAM visualization with brain masking for clearer clinical focus.
   </p>
-  <div class="pills">
-    <span class="pill">DenseNet121</span>
-    <span class="pill">MobileNetV1</span>
-    <span class="pill">ResNet50V2</span>
-    <span class="pill">FHD Ensemble</span>
-    <span class="pill">Grad-CAM</span>
-  </div>
 </div>
 """,
     unsafe_allow_html=True
 )
 
-# ----------------------------
-# Pre-run card
-# ----------------------------
 if not run_button:
-    st.markdown(
-        """
-<div class="card" style="margin-top: 1rem;">
-  <div class="card-title">How to use</div>
-  <div class="small">
-    1) Pick <b>FHD-HybridNet</b> (or a single model)<br/>
-    2) Upload an MRI or select from the gallery<br/>
-    3) Click <b>Run prediction</b> to view probabilities + Grad-CAM
-  </div>
-</div>
-""",
-        unsafe_allow_html=True
-    )
+    st.info("Pick a model + image from the sidebar, then click **Run prediction**.")
     st.stop()
 
 if chosen_file is None:
@@ -550,7 +497,7 @@ try:
             models_dict = load_all_models()
             pred_idx, probs, chosen_key = ensemble_predict_fhd_single(models_dict, batch)
             cam_model = models_dict[chosen_key]
-            cam_title = "FHD-HybridNet"  # ✅ no chosen model text
+            cam_title = "FHD-HybridNet"
         else:
             cam_model = load_single_model(model_name)
             probs = predict_probs(cam_model, batch)
@@ -577,67 +524,65 @@ except Exception as e:
     st.code(str(e))
     st.stop()
 
-
 # ----------------------------
 # 9) OUTPUT
 # ----------------------------
-
-# 1) Title + chips INSIDE the same white card (single block)
 st.markdown(
     f"""
-    <div class="card" style="margin-top: 1rem;">
-      <div class="card-title">Prediction Output</div>
-      <div class="chips">
-        <span class="chip"><b>Model:</b> {cam_title}</span>
-        <span class="chip"><b>Image:</b> {chosen_label if chosen_label else "Selected"}</span>
-        <span class="chip"><b>Prediction:</b> {pred_class}</span>
-        <span class="chip"><b>Confidence:</b> {float(np.max(probs)):.3f}</span>
-      </div>
-    </div>
-    """,
+<div style="
+  border: 1px solid rgba(0,0,0,0.06);
+  border-radius: 18px;
+  background: rgba(255,255,255,0.92);
+  padding: 16px 16px;
+  margin-top: 14px;
+  box-shadow: 0 12px 28px rgba(0,0,0,0.06);
+">
+  <div style="font-size: 1.05rem; font-weight: 900; margin-bottom: 10px;">Prediction Output</div>
+  <div style="display:flex; flex-wrap:wrap; gap:10px;">
+    <div style="border:1px solid rgba(0,0,0,0.06); border-radius:999px; padding:8px 12px; font-weight:800;">Model: {cam_title}</div>
+    <div style="border:1px solid rgba(0,0,0,0.06); border-radius:999px; padding:8px 12px; font-weight:800;">Image: {chosen_label if chosen_label else "Selected"}</div>
+    <div style="border:1px solid rgba(0,0,0,0.06); border-radius:999px; padding:8px 12px; font-weight:800;">Prediction: {pred_class}</div>
+    <div style="border:1px solid rgba(0,0,0,0.06); border-radius:999px; padding:8px 12px; font-weight:800;">Confidence: {confidence:.3f}</div>
+  </div>
+</div>
+""",
     unsafe_allow_html=True
 )
 
-# ----------------------------
-# VISUAL OUTPUT CARD (FIXED)
-# ----------------------------
-st.markdown('<div class="card" style="margin-top:1.25rem;">', unsafe_allow_html=True)
-
-fig, axes = plt.subplots(
-    1, 3,
-    figsize=(13, 4.6),
-    gridspec_kw={"width_ratios": [1, 1, 0.9]}
+st.markdown(
+    """
+<div style="
+  border: 1px solid rgba(0,0,0,0.06);
+  border-radius: 18px;
+  background: rgba(255,255,255,0.92);
+  padding: 14px 14px;
+  margin-top: 12px;
+  box-shadow: 0 12px 28px rgba(0,0,0,0.06);
+">
+""",
+    unsafe_allow_html=True
 )
 
-# ---- Original
+fig, axes = plt.subplots(1, 3, figsize=(13, 4.6), gridspec_kw={"width_ratios": [1, 1, 0.9]})
+
 axes[0].imshow(orig_img)
-axes[0].set_title("Original MRI\nPredicted: " + pred_class, fontsize=11)
+axes[0].set_title("Original\nPredicted: " + pred_class, fontsize=11)
 axes[0].axis("off")
 
-# ---- Grad-CAM
 axes[1].imshow(overlay)
-axes[1].set_title("Grad-CAM\nFHD-HybridNet", fontsize=11)
+axes[1].set_title("Grad-CAM\n" + cam_title, fontsize=11)
 axes[1].axis("off")
 
-# ---- Probabilities
 axes[2].barh(CLASS_NAMES, probs, color="#10bb82")
 axes[2].set_xlim(0, 1)
 axes[2].set_xlabel("Probability", fontsize=10)
 axes[2].set_title("Class Probabilities", fontsize=11)
-
 for i, cls in enumerate(CLASS_NAMES):
-    axes[2].text(
-        probs[i] + 0.015,
-        i,
-        f"{probs[i]:.3f}",
-        va="center",
-        fontsize=9
-    )
+    axes[2].text(float(probs[i]) + 0.015, i, f"{float(probs[i]):.3f}", va="center", fontsize=9)
 
 plt.tight_layout(pad=2.0)
 st.pyplot(fig)
 
-# ---- Save button (clean, no duplicate prediction text)
 buf = io.BytesIO()
 fig.savefig(buf, format="png", bbox_inches="tight", dpi=170)
 buf.seek(0)
@@ -650,4 +595,3 @@ st.download_button(
 )
 
 st.markdown("</div>", unsafe_allow_html=True)
-
